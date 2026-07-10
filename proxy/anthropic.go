@@ -267,7 +267,7 @@ func TranslateAnthropicToCodexWithModels(rawJSON []byte, modelMappingJSON string
 
 	// reasoning effort: align Claude Code /v1/messages with the Responses reasoning shape.
 	out["reasoning"] = map[string]any{
-		"effort":  resolveReasoningEffort(req.OutputConfig),
+		"effort":  resolveReasoningEffort(req.OutputConfig, codexModel),
 		"summary": "auto",
 	}
 
@@ -466,9 +466,9 @@ func extractToolResultText(b anthropicContentBlock) string {
 // resolveReasoningEffort maps Claude output_config.effort to Responses reasoning.effort.
 // Claude thinking.type/budget_tokens only indicates that thinking mode exists; it
 // does not control effort on this OpenAI/Codex compatibility path.
-func resolveReasoningEffort(outputConfig *anthropicOutputConfig) string {
+func resolveReasoningEffort(outputConfig *anthropicOutputConfig, model string) string {
 	if outputConfig != nil && strings.TrimSpace(outputConfig.Effort) != "" {
-		return normalizeReasoningEffort(outputConfig.Effort)
+		return normalizeReasoningEffortForModel(outputConfig.Effort, model)
 	}
 	return "high"
 }

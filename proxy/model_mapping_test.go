@@ -247,6 +247,35 @@ func TestApplyConfiguredModelMappingToBodyIgnoresClaudeMappingSetting(t *testing
 	}
 }
 
+func TestApplyAccountModelMappingReclampsReasoningForFinalModel(t *testing.T) {
+	account := &auth.Account{
+		DBID:         1,
+		UpstreamType: auth.UpstreamOpenAIResponses,
+		BaseURL:      "https://api.openai.com",
+		APIKey:       "sk-test",
+		Models:       []string{"gpt-5.4"},
+		ModelMapping: `{"gpt-5.6-sol":"gpt-5.4"}`,
+	}
+	handler := &Handler{}
+
+	body, mappedModel, mapped := handler.applyAccountModelMappingToBody(
+		[]byte(`{"model":"gpt-5.6-sol","input":"hi","reasoning":{"effort":"max","context":"all_turns","encrypted_content":"opaque"}}`),
+		account,
+	)
+	if !mapped || mappedModel != "gpt-5.4" {
+		t.Fatalf("mapping = %v model = %q, want gpt-5.4", mapped, mappedModel)
+	}
+	if effort := gjson.GetBytes(body, "reasoning.effort").String(); effort != "xhigh" {
+		t.Fatalf("reasoning.effort = %q, want xhigh; body=%s", effort, body)
+	}
+	if context := gjson.GetBytes(body, "reasoning.context").String(); context != "all_turns" {
+		t.Fatalf("reasoning.context = %q, want preserved all_turns; body=%s", context, body)
+	}
+	if encrypted := gjson.GetBytes(body, "reasoning.encrypted_content").String(); encrypted != "opaque" {
+		t.Fatalf("reasoning.encrypted_content = %q, want preserved; body=%s", encrypted, body)
+	}
+}
+
 func TestStripCompactModelSuffix(t *testing.T) {
 	tests := []struct {
 		name      string
