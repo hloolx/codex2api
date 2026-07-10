@@ -833,13 +833,14 @@ func gjsonResultHasCompactionInput(result gjson.Result) bool {
 // extractReasoningEffort 从请求体提取推理强度
 // 支持 reasoning.effort（Responses API）和 reasoning_effort（Chat Completions API）
 func extractReasoningEffort(body []byte) string {
+	model := gjson.GetBytes(body, "model").String()
 	// Responses API: reasoning.effort
 	if effort := gjson.GetBytes(body, "reasoning.effort").String(); effort != "" {
-		return effort
+		return normalizeReasoningEffortForModel(effort, model)
 	}
 	// Chat Completions API: reasoning_effort
 	if effort := gjson.GetBytes(body, "reasoning_effort").String(); effort != "" {
-		return effort
+		return normalizeReasoningEffortForModel(effort, model)
 	}
 	return ""
 }
@@ -1791,6 +1792,7 @@ func (h *Handler) Responses(c *gin.Context) {
 		h.store.BindSessionAffinity(affinityKey, account, proxyURL)
 		attemptEffectiveModel := effectiveModel
 		attemptLogEffectiveModel := logEffectiveModel
+		attemptReasoningEffort := normalizeReasoningEffortForModel(reasoningEffort, attemptEffectiveModel)
 		useWebsocket := h.shouldUseWebsocketForHTTP() && !forceHTTPAfterWSMessageTooBig
 		// 生图请求强制走 HTTP：WebSocket 传输大体积图片数据会卡死（issue #220）；
 		// 自然语言生图意图也需保留 image_generation 工具（issue #288）。
@@ -1838,6 +1840,7 @@ func (h *Handler) Responses(c *gin.Context) {
 				upstreamBody = mappedBody
 				attemptEffectiveModel = mappedModel
 				attemptLogEffectiveModel = usageEffectiveModelForMapping(logModel, attemptEffectiveModel, true)
+				attemptReasoningEffort = extractReasoningEffort(upstreamBody)
 			}
 			resp, reqErr := ExecuteOpenAIResponsesRequest(upstreamCtx, account, upstreamBody, proxyURL, downstreamHeaders)
 			durationMs := int(time.Since(start).Milliseconds())
@@ -1939,7 +1942,7 @@ func (h *Handler) Responses(c *gin.Context) {
 					EffectiveModel:       attemptLogEffectiveModel,
 					StatusCode:           resp.StatusCode,
 					DurationMs:           durationMs,
-					ReasoningEffort:      reasoningEffort,
+					ReasoningEffort:      attemptReasoningEffort,
 					InboundEndpoint:      "/v1/responses",
 					UpstreamEndpoint:     upstreamEndpoint,
 					Stream:               isStream,
@@ -2152,7 +2155,7 @@ func (h *Handler) Responses(c *gin.Context) {
 				StatusCode:           outcome.logStatusCode,
 				DurationMs:           totalDuration,
 				FirstTokenMs:         firstTokenMs,
-				ReasoningEffort:      reasoningEffort,
+				ReasoningEffort:      attemptReasoningEffort,
 				InboundEndpoint:      "/v1/responses",
 				UpstreamEndpoint:     upstreamEndpoint,
 				Stream:               isStream,
@@ -2314,7 +2317,7 @@ func (h *Handler) Responses(c *gin.Context) {
 				EffectiveModel:       logEffectiveModel,
 				StatusCode:           resp.StatusCode,
 				DurationMs:           durationMs,
-				ReasoningEffort:      reasoningEffort,
+				ReasoningEffort:      attemptReasoningEffort,
 				InboundEndpoint:      "/v1/responses",
 				UpstreamEndpoint:     "/v1/responses",
 				Stream:               isStream,
@@ -2669,7 +2672,7 @@ func (h *Handler) Responses(c *gin.Context) {
 			StatusCode:           logStatusCode,
 			DurationMs:           totalDuration,
 			FirstTokenMs:         firstTokenMs,
-			ReasoningEffort:      reasoningEffort,
+			ReasoningEffort:      attemptReasoningEffort,
 			InboundEndpoint:      "/v1/responses",
 			UpstreamEndpoint:     "/v1/responses",
 			Stream:               isStream,
@@ -2837,6 +2840,7 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 		h.store.BindSessionAffinity(affinityKey, account, proxyURL)
 		attemptEffectiveModel := effectiveModel
 		attemptLogEffectiveModel := logEffectiveModel
+		attemptReasoningEffort := normalizeReasoningEffortForModel(reasoningEffort, attemptEffectiveModel)
 
 		apiKey := strings.TrimPrefix(c.GetHeader("Authorization"), "Bearer ")
 		apiKey = strings.TrimSpace(apiKey)
@@ -2854,6 +2858,7 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 				upstreamBody = mappedBody
 				attemptEffectiveModel = mappedModel
 				attemptLogEffectiveModel = usageEffectiveModelForMapping(logModel, attemptEffectiveModel, true)
+				attemptReasoningEffort = extractReasoningEffort(upstreamBody)
 			}
 			resp, reqErr := ExecuteOpenAIResponsesCompactRequest(c.Request.Context(), account, upstreamBody, proxyURL, downstreamHeaders)
 			durationMs := int(time.Since(start).Milliseconds())
@@ -2921,7 +2926,7 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 					EffectiveModel:       attemptLogEffectiveModel,
 					StatusCode:           resp.StatusCode,
 					DurationMs:           durationMs,
-					ReasoningEffort:      reasoningEffort,
+					ReasoningEffort:      attemptReasoningEffort,
 					InboundEndpoint:      "/v1/responses/compact",
 					UpstreamEndpoint:     upstreamEndpoint,
 					ServiceTier:          usageTiers.ServiceTier,
@@ -2969,7 +2974,7 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 					EffectiveModel:       attemptLogEffectiveModel,
 					StatusCode:           http.StatusBadGateway,
 					DurationMs:           totalDuration,
-					ReasoningEffort:      reasoningEffort,
+					ReasoningEffort:      attemptReasoningEffort,
 					InboundEndpoint:      "/v1/responses/compact",
 					UpstreamEndpoint:     upstreamEndpoint,
 					ServiceTier:          usageTiers.ServiceTier,
@@ -3023,7 +3028,7 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 				OutputTokens:         completionTokens,
 				ReasoningTokens:      reasoningTokens,
 				CachedTokens:         cachedTokens,
-				ReasoningEffort:      reasoningEffort,
+				ReasoningEffort:      attemptReasoningEffort,
 				InboundEndpoint:      "/v1/responses/compact",
 				UpstreamEndpoint:     upstreamEndpoint,
 				ServiceTier:          usageTiers.ServiceTier,
@@ -3111,7 +3116,7 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 				EffectiveModel:       logEffectiveModel,
 				StatusCode:           resp.StatusCode,
 				DurationMs:           durationMs,
-				ReasoningEffort:      reasoningEffort,
+				ReasoningEffort:      attemptReasoningEffort,
 				InboundEndpoint:      "/v1/responses/compact",
 				UpstreamEndpoint:     "/v1/responses/compact",
 				ServiceTier:          usageTiers.ServiceTier,
@@ -3161,7 +3166,7 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 				EffectiveModel:       logEffectiveModel,
 				StatusCode:           http.StatusBadGateway,
 				DurationMs:           totalDuration,
-				ReasoningEffort:      reasoningEffort,
+				ReasoningEffort:      attemptReasoningEffort,
 				InboundEndpoint:      "/v1/responses/compact",
 				UpstreamEndpoint:     "/v1/responses/compact",
 				ServiceTier:          usageTiers.ServiceTier,
@@ -3211,7 +3216,7 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 			OutputTokens:         completionTokens,
 			ReasoningTokens:      reasoningTokens,
 			CachedTokens:         cachedTokens,
-			ReasoningEffort:      reasoningEffort,
+			ReasoningEffort:      attemptReasoningEffort,
 			InboundEndpoint:      "/v1/responses/compact",
 			UpstreamEndpoint:     "/v1/responses/compact",
 			ServiceTier:          usageTiers.ServiceTier,
@@ -3357,6 +3362,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 		isRelayAccount := account.IsOpenAIResponsesAPI()
 		attemptEffectiveModel := effectiveModel
 		attemptLogEffectiveModel := logEffectiveModel
+		attemptReasoningEffort := normalizeReasoningEffortForModel(reasoningEffort, attemptEffectiveModel)
 		useWebsocket := h.shouldUseWebsocketForHTTP() && !forceHTTPAfterWSMessageTooBig && !isRelayAccount
 		// 真实生图意图强制走 HTTP：WebSocket 传输大体积图片数据会卡死（issue #220）。
 		// 仅凭注入的 image_generation 工具不触发降级，普通请求继续走 WS（issue #304）。
@@ -3403,6 +3409,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 				upstreamBody = mappedBody
 				attemptEffectiveModel = mappedModel
 				attemptLogEffectiveModel = usageEffectiveModelForMapping(logModel, attemptEffectiveModel, true)
+				attemptReasoningEffort = extractReasoningEffort(upstreamBody)
 			}
 			resp, reqErr = ExecuteOpenAIResponsesRequest(upstreamCtx, account, upstreamBody, proxyURL, downstreamHeaders)
 		} else {
@@ -3497,7 +3504,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 				EffectiveModel:       attemptLogEffectiveModel,
 				StatusCode:           resp.StatusCode,
 				DurationMs:           durationMs,
-				ReasoningEffort:      reasoningEffort,
+				ReasoningEffort:      attemptReasoningEffort,
 				InboundEndpoint:      "/v1/chat/completions",
 				UpstreamEndpoint:     upstreamEndpoint,
 				Stream:               isStream,
@@ -3797,7 +3804,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 			StatusCode:           logStatusCode,
 			DurationMs:           totalDuration,
 			FirstTokenMs:         firstTokenMs,
-			ReasoningEffort:      reasoningEffort,
+			ReasoningEffort:      attemptReasoningEffort,
 			InboundEndpoint:      "/v1/chat/completions",
 			UpstreamEndpoint:     upstreamEndpoint,
 			Stream:               isStream,

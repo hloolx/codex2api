@@ -43,7 +43,30 @@ const FALLBACK_MODELS = [
 type CCSwitchApp = "claude" | "codex" | "gemini";
 type QuickToolTab = "codex-cli" | "claude-code" | "cc-switch" | "cherry-studio";
 type QuickServiceTier = "default" | "fast";
-type QuickReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "ultra";
+type QuickReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
+
+const BASE_QUICK_REASONING_EFFORT_OPTIONS = [
+  { label: "None", value: "none" },
+  { label: "Minimal", value: "minimal" },
+  { label: "Low", value: "low" },
+  { label: "Medium", value: "medium" },
+  { label: "High", value: "high" },
+  { label: "xhigh", value: "xhigh" },
+] as const;
+
+function quickReasoningEffortOptionsForModel(model: string) {
+  const baseModel = model.trim().toLowerCase().split("(", 1)[0];
+  const options: Array<{ label: string; value: QuickReasoningEffort }> = [...BASE_QUICK_REASONING_EFFORT_OPTIONS];
+  if (["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"].includes(baseModel)) {
+    options.push({ label: "max", value: "max" });
+  }
+  // Ultra is a Codex client mode, not an API reasoning.effort value. The
+  // official client converts it to max and enables its multi-agent behavior.
+  if (["gpt-5.6-sol", "gpt-5.6-terra"].includes(baseModel)) {
+    options.push({ label: "Ultra", value: "ultra" });
+  }
+  return options;
+}
 
 const CC_SWITCH_LOGO = "https://ccswitch.io/assets/cc-switch-logo-BPrI77SG.png";
 const LOBE_ICON_BASE =
@@ -625,6 +648,17 @@ export default function Docs() {
   const [ccSwitchModels, setCcSwitchModels] = useState<Record<string, string>>({
     model: "gpt-5.4",
   });
+
+  const quickReasoningEffortOptions = useMemo(
+    () => quickReasoningEffortOptionsForModel(quickStartModel),
+    [quickStartModel],
+  );
+
+  useEffect(() => {
+    if (!quickReasoningEffortOptions.some((option) => option.value === quickReasoningEffort)) {
+      setQuickReasoningEffort("xhigh");
+    }
+  }, [quickReasoningEffort, quickReasoningEffortOptions]);
   const [cherryProviderId, setCherryProviderId] = useState("");
   const [cherryProviderEdited, setCherryProviderEdited] = useState(false);
   const [activeCurl, setActiveCurl] = useState<
@@ -1149,15 +1183,7 @@ set CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`;
                       onValueChange={(value) =>
                         setQuickReasoningEffort(value as QuickReasoningEffort)
                       }
-                      options={[
-                        { label: "None", value: "none" },
-                        { label: "Minimal", value: "minimal" },
-                        { label: "Low", value: "low" },
-                        { label: "Medium", value: "medium" },
-                        { label: "High", value: "high" },
-                        { label: "xhigh", value: "xhigh" },
-                        { label: "ultra", value: "ultra" },
-                      ]}
+                      options={quickReasoningEffortOptions}
                     />
                   </FieldBox>
                 ) : null}

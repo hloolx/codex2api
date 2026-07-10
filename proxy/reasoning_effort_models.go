@@ -71,7 +71,7 @@ func parseReasoningEffortModelEntries(value string, supportedModels []string, st
 		effort := normalizeConfiguredReasoningEffort(entry.Effort, model)
 		if model == "" || effort == "" {
 			if strict {
-				return nil, fmt.Errorf("reasoning_effort_models[%d] 需要非空 model 且 effort 必须是 none/minimal/low/medium/high/xhigh/ultra", i)
+				return nil, fmt.Errorf("reasoning_effort_models[%d] 需要非空 model 且 effort 必须是 none/minimal/low/medium/high/xhigh/max", i)
 			}
 			continue
 		}
@@ -102,10 +102,10 @@ func normalizeReasoningEffortBaseModel(model string, supportedModels []string) s
 }
 
 // normalizeConfiguredReasoningEffort 归一化设置里配置的思考强度档位。
-// max 仅 gpt-5.6 起的模型放行,旧模型配置 max 会被钳到 xhigh(上游不接受)。
+// max 仅已确认的 GPT-5.6 Sol/Terra/Luna 放行，旧模型仍钳到 xhigh。
 func normalizeConfiguredReasoningEffort(effort, model string) string {
 	switch strings.ToLower(strings.TrimSpace(effort)) {
-	case "none", "minimal", "low", "medium", "high", "xhigh", "ultra":
+	case "none", "minimal", "low", "medium", "high", "xhigh":
 		return strings.ToLower(strings.TrimSpace(effort))
 	case "max":
 		if modelSupportsMaxReasoningEffort(model) {

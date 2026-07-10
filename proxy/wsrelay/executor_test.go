@@ -68,6 +68,61 @@ func TestPrepareWebsocketHeadersUsesConfiguredDefaultsAndBetaFeatures(t *testing
 	}
 }
 
+func TestPrepareWebsocketHeadersMergesBetaCapabilities(t *testing.T) {
+	exec := NewExecutor()
+	account := &auth.Account{
+		DBID:      42,
+		AccountID: "42",
+		CustomHeaders: map[string]string{
+			"OpenAI-Beta":           "custom_beta=v2, responses_websockets=2026-02-06",
+			"X-Codex-Beta-Features": "custom_feature, multi_agent",
+		},
+	}
+	cfg := &proxy.DeviceProfileConfig{BetaFeatures: "default_feature, multi_agent"}
+	downstreamHeaders := http.Header{
+		"OpenAI-Beta":           []string{"responses_multi_agent=v1, responses_websockets=2026-02-06"},
+		"X-Codex-Beta-Features": []string{"multi_agent, client_feature"},
+	}
+
+	headers := exec.prepareWebsocketHeaders("token-123", account, "42", "session-123", "api-key-1", cfg, downstreamHeaders)
+
+	if got, want := headers.Get("OpenAI-Beta"), "responses_websockets=2026-02-06, responses_multi_agent=v1, custom_beta=v2"; got != want {
+		t.Fatalf("OpenAI-Beta = %q, want %q", got, want)
+	}
+	if got, want := headers.Get("X-Codex-Beta-Features"), "multi_agent, client_feature, default_feature, custom_feature"; got != want {
+		t.Fatalf("X-Codex-Beta-Features = %q, want %q", got, want)
+	}
+}
+
+func TestWebsocketBetaCapabilitySignaturePartitionsOnlyOptionalCapabilities(t *testing.T) {
+	baseline := http.Header{"OpenAI-Beta": []string{responsesWebsocketBetaHeader}}
+	if got := websocketBetaCapabilitySignature(baseline); got != "" {
+		t.Fatalf("baseline capability signature = %q, want empty", got)
+	}
+
+	first := http.Header{
+		"OpenAI-Beta":           []string{"responses_websockets=2026-02-06, responses_multi_agent=v1"},
+		"X-Codex-Beta-Features": []string{"multi_agent, client_feature"},
+	}
+	second := http.Header{
+		"OpenAI-Beta":           []string{"RESPONSES_MULTI_AGENT=V1, responses_websockets=2026-02-06"},
+		"X-Codex-Beta-Features": []string{"client_feature, MULTI_AGENT"},
+	}
+	firstSignature := websocketBetaCapabilitySignature(first)
+	if firstSignature == "" {
+		t.Fatal("optional beta capabilities must produce a signature")
+	}
+	if secondSignature := websocketBetaCapabilitySignature(second); secondSignature != firstSignature {
+		t.Fatalf("normalized capability signatures differ: %q != %q", secondSignature, firstSignature)
+	}
+	if got := withWebsocketBetaCapability("cache-key", firstSignature); got == "cache-key" {
+		t.Fatal("optional beta capabilities must partition the local pool key")
+	}
+	if got := withWebsocketBetaCapability("cache-key", ""); got != "cache-key" {
+		t.Fatalf("baseline local pool key = %q, want unchanged", got)
+	}
+}
+
 func TestPrepareWebsocketHeadersAppliesAccountCustomHeadersLast(t *testing.T) {
 	exec := NewExecutor()
 	account := &auth.Account{

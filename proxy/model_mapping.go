@@ -279,6 +279,20 @@ func (h *Handler) applyAccountModelMappingToBodyForModels(rawBody []byte, accoun
 	if err != nil {
 		return rawBody, model, false
 	}
+	// Account mappings run after the generic request preparation step. Re-clamp
+	// effort against the final upstream model so a 5.6 max request mapped onto a
+	// legacy model cannot leak an unsupported max value.
+	for _, path := range []string{"reasoning.effort", "reasoning_effort"} {
+		effort := gjson.GetBytes(updatedBody, path)
+		if !effort.Exists() || effort.Type != gjson.String {
+			continue
+		}
+		normalized := normalizeReasoningEffortForModel(effort.String(), mappedModel)
+		updatedBody, err = sjson.SetBytes(updatedBody, path, normalized)
+		if err != nil {
+			return rawBody, model, false
+		}
+	}
 	return updatedBody, mappedModel, true
 }
 

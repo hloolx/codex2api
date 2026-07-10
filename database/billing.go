@@ -42,6 +42,9 @@ var (
 	defaultModelPricing = &ModelPricing{InputPricePerMToken: 1.0, OutputPricePerMToken: 2.0}
 
 	modelPricingRules = []modelPricingRule{
+		{model: "gpt-5.6-sol", pricing: ModelPricing{InputPricePerMToken: 5.0, OutputPricePerMToken: 30.0, CacheReadPricePerMToken: 0.5}},
+		{model: "gpt-5.6-terra", pricing: ModelPricing{InputPricePerMToken: 2.5, OutputPricePerMToken: 15.0, CacheReadPricePerMToken: 0.25}},
+		{model: "gpt-5.6-luna", pricing: ModelPricing{InputPricePerMToken: 1.0, OutputPricePerMToken: 6.0, CacheReadPricePerMToken: 0.1}},
 		{model: "gpt-5.5", pricing: ModelPricing{
 			InputPricePerMToken:                 5.0,
 			InputPricePerMTokenPriority:         12.5,
@@ -232,6 +235,12 @@ func normalizeBillingModelName(model string) string {
 func normalizeCodexBillingModel(model string) (string, bool) {
 	compact := strings.NewReplacer(" ", "-", "_", "-").Replace(strings.ToLower(model))
 	switch {
+	case strings.Contains(compact, "gpt-5.6-sol") || strings.Contains(compact, "gpt5-6-sol") || strings.Contains(compact, "gpt5.6-sol"):
+		return "gpt-5.6-sol", true
+	case strings.Contains(compact, "gpt-5.6-terra") || strings.Contains(compact, "gpt5-6-terra") || strings.Contains(compact, "gpt5.6-terra"):
+		return "gpt-5.6-terra", true
+	case strings.Contains(compact, "gpt-5.6-luna") || strings.Contains(compact, "gpt5-6-luna") || strings.Contains(compact, "gpt5.6-luna"):
+		return "gpt-5.6-luna", true
 	case strings.Contains(compact, "gpt-5.5-pro") || strings.Contains(compact, "gpt5-5-pro") || strings.Contains(compact, "gpt5.5-pro"):
 		return "gpt-5.5-pro", true
 	case strings.Contains(compact, "gpt-5.5") || strings.Contains(compact, "gpt5-5") || strings.Contains(compact, "gpt5.5"):

@@ -258,7 +258,8 @@ func inputHasFunctionCallOutput(input gjson.Result) bool {
 		switch v.Get("type").String() {
 		case "function_call_output", "tool_call_output", "local_shell_call_output",
 			"shell_call_output", "apply_patch_call_output",
-			"tool_search_call_output", "custom_tool_call_output", "mcp_tool_call_output":
+			"tool_search_call_output", "custom_tool_call_output", "mcp_tool_call_output",
+			"multi_agent_call_output":
 			found = true
 			return false
 		}
@@ -336,6 +337,10 @@ func replayableCachedOutputItem(item gjson.Result) (json.RawMessage, bool) {
 }
 
 func stripResponseItemID(raw json.RawMessage) (json.RawMessage, bool) {
+	if preserveResponsesMultiAgentItemID(gjson.GetBytes(raw, "type").String()) {
+		return raw, true
+	}
+
 	var item map[string]any
 	if err := json.Unmarshal(raw, &item); err != nil || item == nil {
 		return raw, true
@@ -360,7 +365,20 @@ func isCodexToolCallContextType(typ string) bool {
 		"apply_patch_call",
 		"tool_search_call",
 		"custom_tool_call",
-		"mcp_tool_call":
+		"mcp_tool_call",
+		"multi_agent_call":
+		return true
+	default:
+		return false
+	}
+}
+
+// Multi-agent items form an ID-linked replay graph. Unlike ordinary stored
+// Responses items, their IDs are protocol data rather than server-side object
+// references, so removing them breaks the next turn's call/output linkage.
+func preserveResponsesMultiAgentItemID(itemType string) bool {
+	switch itemType {
+	case "agent_message", "multi_agent_call", "multi_agent_call_output":
 		return true
 	default:
 		return false

@@ -656,6 +656,36 @@ func ResolveCodexOutboundClientHeadersWithDecision(account *auth.Account, apiKey
 	return resolveCodexOutboundClientHeaders(account, apiKey, deviceCfg, downstreamHeaders)
 }
 
+func mergeCommaSeparatedHeaderValues(values ...string) string {
+	merged := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		for _, token := range strings.Split(value, ",") {
+			token = strings.TrimSpace(token)
+			if token == "" {
+				continue
+			}
+			key := strings.ToLower(token)
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			merged = append(merged, token)
+		}
+	}
+	return strings.Join(merged, ", ")
+}
+
+func headerValuesCaseInsensitive(headers http.Header, name string) []string {
+	var matched []string
+	for key, values := range headers {
+		if strings.EqualFold(key, name) {
+			matched = append(matched, values...)
+		}
+	}
+	return matched
+}
+
 func applyCodexAllowedForwardHeaders(req *http.Request, downstreamHeaders http.Header) {
 	if req == nil || downstreamHeaders == nil {
 		return
@@ -715,7 +745,11 @@ func applyCodexRequestHeaders(req *http.Request, account *auth.Account, accessTo
 		req.Header.Set("Session_id", cacheKey)
 		req.Header.Del("Conversation_id")
 	}
+	forwardedBetaFeatures := req.Header.Get("X-Codex-Beta-Features")
 	applyAccountCustomHeaders(req, account)
+	if betaFeatures := mergeCommaSeparatedHeaderValues(forwardedBetaFeatures, req.Header.Get("X-Codex-Beta-Features")); betaFeatures != "" {
+		req.Header.Set("X-Codex-Beta-Features", betaFeatures)
+	}
 }
 
 func applyOpenAIResponsesRequestHeaders(req *http.Request, account *auth.Account, apiKey string, headers http.Header) {
@@ -736,8 +770,15 @@ func applyOpenAIResponsesRequestHeaders(req *http.Request, account *auth.Account
 				req.Header.Set(key, value)
 			}
 		}
+		if beta := mergeCommaSeparatedHeaderValues(headerValuesCaseInsensitive(headers, "OpenAI-Beta")...); beta != "" {
+			req.Header.Set("OpenAI-Beta", beta)
+		}
 	}
+	forwardedBeta := req.Header.Get("OpenAI-Beta")
 	applyAccountCustomHeaders(req, account)
+	if beta := mergeCommaSeparatedHeaderValues(forwardedBeta, req.Header.Get("OpenAI-Beta")); beta != "" {
+		req.Header.Set("OpenAI-Beta", beta)
+	}
 }
 
 // ResolveSessionID 从下游请求提取或生成 session ID

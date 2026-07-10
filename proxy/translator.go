@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"net/http"
 	"reflect"
-	"strconv"
 	"strings"
 	"sync"
 
@@ -934,6 +933,9 @@ func normalizeResponsesInputItemIDs(body map[string]any) bool {
 		if !ok {
 			continue
 		}
+		if preserveResponsesMultiAgentItemID(firstNonEmptyAnyString(itemMap["type"])) {
+			continue
+		}
 		if _, exists := itemMap["id"]; exists {
 			delete(itemMap, "id")
 			modified = true
@@ -1834,6 +1836,9 @@ func PrepareOpenAIResponsesBody(rawBody []byte) []byte {
 			}
 		}
 	}
+	// reasoning_effort is accepted only as a compatibility input. The native
+	// Responses wire format uses reasoning.effort, so never forward both forms.
+	delete(body, "reasoning_effort")
 
 	normalizeResponsesStructuredOutputFormat(body)
 	normalizeResponsesFunctionTools(body)
@@ -1886,7 +1891,7 @@ func PrepareOpenAIResponsesCompactBody(rawBody []byte) []byte {
 }
 
 // normalizeReasoningEffort 将 reasoning_effort 钳位到上游支持的值。
-// max 仅 gpt-5.6 起的模型支持(旧模型上游 400),无模型上下文时安全钳到 xhigh;
+// max 仅已确认的 GPT-5.6 Sol/Terra/Luna 支持；无模型上下文时安全钳到 xhigh;
 // 有模型上下文的调用方用 normalizeReasoningEffortForModel。
 func normalizeReasoningEffort(effort string) string {
 	effort = strings.ToLower(strings.TrimSpace(effort))
@@ -1894,7 +1899,7 @@ func normalizeReasoningEffort(effort string) string {
 		return ""
 	}
 	switch effort {
-	case "none", "minimal", "low", "medium", "high", "xhigh", "ultra":
+	case "none", "minimal", "low", "medium", "high", "xhigh":
 		return effort
 	case "max":
 		return "xhigh"
@@ -1904,7 +1909,7 @@ func normalizeReasoningEffort(effort string) string {
 }
 
 // normalizeReasoningEffortForModel 在通用钳位基础上按模型放行 max：
-// gpt-5.6 起上游接受 effort=max 并原样回显；旧模型返回
+// 已确认的 GPT-5.6 Sol/Terra/Luna 接受 effort=max 并原样回显；旧模型返回
 // "Invalid value: 'max'"，一律钳到 xhigh。
 func normalizeReasoningEffortForModel(effort, model string) string {
 	if strings.ToLower(strings.TrimSpace(effort)) == "max" && modelSupportsMaxReasoningEffort(model) {
@@ -1913,33 +1918,16 @@ func normalizeReasoningEffortForModel(effort, model string) string {
 	return normalizeReasoningEffort(effort)
 }
 
-// modelSupportsMaxReasoningEffort 判断模型是否支持 reasoning.effort=max
-// （gpt-5.6 及更高版本；带变体后缀如 gpt-5.6-sol 同样识别）。
+// modelSupportsMaxReasoningEffort reports the models currently known to accept
+// reasoning.effort=max. Keep this explicit: the Codex model manifest is the
+// source of truth for future models, and unknown versions must not be guessed.
 func modelSupportsMaxReasoningEffort(model string) bool {
-	model = strings.ToLower(strings.TrimSpace(model))
-	if !strings.HasPrefix(model, "gpt-") {
-		return false
-	}
-	version := strings.TrimPrefix(model, "gpt-")
-	if dash := strings.IndexByte(version, '-'); dash >= 0 {
-		version = version[:dash]
-	}
-	parts := strings.Split(version, ".")
-	if len(parts) < 2 {
-		return false
-	}
-	major, err := strconv.Atoi(parts[0])
-	if err != nil {
-		return false
-	}
-	minor, err := strconv.Atoi(parts[1])
-	if err != nil {
-		return false
-	}
-	if major > 5 {
+	switch strings.ToLower(strings.TrimSpace(model)) {
+	case "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna":
 		return true
+	default:
+		return false
 	}
-	return major == 5 && minor >= 6
 }
 
 // isAllowedServiceTier 判断 service_tier 是否在上游允许的范围内

@@ -63,6 +63,25 @@ func TestTranslateAnthropicToCodex_OutputConfigEffortTakesPrecedence(t *testing.
 	}
 }
 
+func TestTranslateAnthropicToCodex_GPT56KeepsMaxEffort(t *testing.T) {
+	raw := []byte(`{
+		"model":"claude-sonnet-4-5",
+		"messages":[{"role":"user","content":"hello"}],
+		"output_config":{"effort":"max"}
+	}`)
+	got, _, err := TranslateAnthropicToCodexWithModels(
+		raw,
+		`{"claude-sonnet-4-5":"gpt-5.6-sol"}`,
+		[]string{"gpt-5.6-sol"},
+	)
+	if err != nil {
+		t.Fatalf("TranslateAnthropicToCodexWithModels returned error: %v", err)
+	}
+	if effort := gjson.GetBytes(got, "reasoning.effort").String(); effort != "max" {
+		t.Fatalf("reasoning.effort = %q, want max; body=%s", effort, got)
+	}
+}
+
 func TestTranslateAnthropicToCodex_OutputConfigHighIsExplicit(t *testing.T) {
 	raw := []byte(`{
 		"model":"claude-sonnet-4-5",

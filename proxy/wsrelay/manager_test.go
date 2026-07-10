@@ -401,6 +401,24 @@ func TestAcquirePreferredConnection(t *testing.T) {
 	}
 }
 
+func TestAcquirePreferredConnectionRejectsDifferentBetaCapabilities(t *testing.T) {
+	manager := NewManager()
+	t.Cleanup(manager.Stop)
+	manager.probeFunc = func(wc *WsConnection) bool { return true }
+
+	wc := newBoundTestConn(t, manager, 7, "base#3|ws-beta=old")
+	wc.betaCapabilitySignature = "old"
+	manager.BindResponseConn("resp_chain", wc, "base#3|ws-beta=old", 7, "key-A")
+
+	got, pr, _ := manager.AcquirePreferredConnection("resp_chain", 7, "key-A", "new")
+	if got != nil || pr != nil {
+		t.Fatal("preferred connection with a different beta capability signature must not be reused")
+	}
+	if wc.session.PendingCount() != 0 {
+		t.Fatalf("PendingCount = %d, want 0 after capability mismatch", wc.session.PendingCount())
+	}
+}
+
 func TestAcquirePreferredConnectionProbeFailureEvicts(t *testing.T) {
 	manager := NewManager()
 	t.Cleanup(manager.Stop)

@@ -44,6 +44,45 @@ func TestGetModelPricingUsesSub2APICodexFallbacks(t *testing.T) {
 	}
 }
 
+func TestGPT56PricingRecognizesVariantsAndReasoningAliases(t *testing.T) {
+	tests := []struct {
+		model      string
+		wantInput  float64
+		wantOutput float64
+		wantCached float64
+	}{
+		{model: "gpt-5.6-sol", wantInput: 5.0, wantOutput: 30.0, wantCached: 0.5},
+		{model: "gpt-5.6-sol(max)", wantInput: 5.0, wantOutput: 30.0, wantCached: 0.5},
+		{model: "gpt-5.6-terra", wantInput: 2.5, wantOutput: 15.0, wantCached: 0.25},
+		{model: "gpt-5.6-terra(max)", wantInput: 2.5, wantOutput: 15.0, wantCached: 0.25},
+		{model: "gpt-5.6-luna", wantInput: 1.0, wantOutput: 6.0, wantCached: 0.1},
+		{model: "gpt-5.6-luna(max)", wantInput: 1.0, wantOutput: 6.0, wantCached: 0.1},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.model, func(t *testing.T) {
+			pricing := GetModelPricing(tt.model)
+			assertFloatEqual(t, pricing.InputPricePerMToken, tt.wantInput)
+			assertFloatEqual(t, pricing.OutputPricePerMToken, tt.wantOutput)
+			assertFloatEqual(t, pricing.CacheReadPricePerMToken, tt.wantCached)
+		})
+	}
+}
+
+func TestGPT56PricingDoesNotInheritGPT54LongContextPremium(t *testing.T) {
+	for _, model := range []string{"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"} {
+		t.Run(model, func(t *testing.T) {
+			pricing := GetModelPricing(model)
+			breakdown := CalculateCostBreakdown(longContextThreshold+1, 1, 0, model, "default")
+			if breakdown.LongContext {
+				t.Fatalf("%s incorrectly inherited a long-context premium", model)
+			}
+			assertFloatEqual(t, breakdown.InputPricePerMToken, pricing.InputPricePerMToken)
+			assertFloatEqual(t, breakdown.OutputPricePerMToken, pricing.OutputPricePerMToken)
+		})
+	}
+}
+
 func TestGetModelPricingUsesSub2APIClaudeFamilies(t *testing.T) {
 	tests := []struct {
 		model      string

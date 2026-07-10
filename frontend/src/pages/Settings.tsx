@@ -86,7 +86,7 @@ type CodexUserAgentConfig = {
 }
 
 const EMPTY_REASONING_EFFORT_MODEL_ENTRIES: ReasoningEffortModelEntry[] = []
-const REASONING_EFFORT_OPTIONS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'ultra', 'max'].map((effort) => ({
+const REASONING_EFFORT_OPTIONS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'].map((effort) => ({
   label: effort,
   value: effort,
 }))
@@ -136,8 +136,8 @@ const serializeModelMappingEntries = (entries: ModelMappingEntry[]) => {
 
 const normalizeReasoningEffortValue = (effort: string) => {
   const value = effort.trim().toLowerCase()
-  // max 仅 gpt-5.6+ 上游支持,后端会按模型钳位,前端保留原值让用户可配
-  return ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'ultra', 'max'].includes(value) ? value : 'xhigh'
+  // max 仅已确认的 GPT-5.6 Sol/Terra/Luna 放行，后端按模型钳位。
+  return ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'].includes(value) ? value : 'xhigh'
 }
 
 const normalizeBillingTierPolicyValue = (value?: string | null): 'actual' | 'requested' =>
@@ -1608,7 +1608,7 @@ export default function Settings() {
       category: id.includes('image') ? 'image' : 'codex',
       source: 'builtin',
       pro_only: id === 'gpt-5.3-codex-spark',
-      api_key_auth_available: !['gpt-5.5', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna'].includes(id),
+      api_key_auth_available: id !== 'gpt-5.5',
     }))
   }, [modelItems, modelList])
   const codexModelOptions = visibleModelItems
