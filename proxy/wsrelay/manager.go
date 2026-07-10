@@ -43,6 +43,10 @@ type WsConnection struct {
 	// 连接池键
 	PoolKey string
 
+	// WebSocket 握手中的可选 beta 能力签名；仅用于阻止续链亲和错误复用
+	// 握手能力不同的旧连接，不参与任何上游会话字段。
+	betaCapabilitySignature string
+
 	// 连接状态
 	state atomic.Int32
 
@@ -582,6 +586,7 @@ func (m *Manager) createConnection(
 	// 创建连接包装
 	wc := NewWsConnection(conn, session, wsURL)
 	wc.PoolKey = poolKey
+	wc.betaCapabilitySignature = websocketBetaCapabilitySignature(headers)
 	wc.httpResp = resp
 	wc.onDisconnected = m.getOnDisconnected()
 	session.SetConnected(true)
@@ -698,9 +703,12 @@ func (m *Manager) lookupResponseConn(responseID string, accountID int64, apiKey 
 // 成功返回 (连接, pendingRequest, 池内 sessionKey)；绑定失效或连接忙时返回 nil，
 // 调用方回退到常规 acquire 路径。忙时不等待：续链上下文虽在原连接，但排队会
 // 阻塞在前一个长响应后面，且该场景（同会话并发续链）极少，退化为缓存 miss 更稳。
-func (m *Manager) AcquirePreferredConnection(responseID string, accountID int64, apiKey string) (*WsConnection, *PendingRequest, string) {
+func (m *Manager) AcquirePreferredConnection(responseID string, accountID int64, apiKey string, expectedBetaCapabilitySignature ...string) (*WsConnection, *PendingRequest, string) {
 	wc, sessionKey := m.lookupResponseConn(responseID, accountID, apiKey)
 	if wc == nil {
+		return nil, nil, ""
+	}
+	if len(expectedBetaCapabilitySignature) > 0 && wc.betaCapabilitySignature != expectedBetaCapabilitySignature[0] {
 		return nil, nil, ""
 	}
 	lock := m.keyLock(wc.PoolKey)

@@ -2790,20 +2790,23 @@ func TestPrepareCompactBodiesStripClientMetadata(t *testing.T) {
 	}
 }
 
-// max 档位按模型放行:gpt-5.6 起上游接受并回显,旧模型上游 400,须钳到 xhigh。
+// max is an independent wire effort only for the three currently confirmed
+// GPT-5.6 models. Unknown future versions remain on the legacy safe clamp.
 func TestNormalizeReasoningEffortForModel_MaxGatedByModel(t *testing.T) {
 	cases := []struct {
 		effort, model, want string
 	}{
 		{"max", "gpt-5.6-sol", "max"},
 		{"MAX", "gpt-5.6-terra", "max"},
-		{"max", "gpt-5.6", "max"},
-		{"max", "gpt-6.0", "max"},
+		{"max", "gpt-5.6-luna", "max"},
+		{"max", "gpt-5.6", "xhigh"},
+		{"max", "gpt-6.0", "xhigh"},
 		{"max", "gpt-5.4", "xhigh"},
 		{"max", "gpt-5.5", "xhigh"},
 		{"max", "", "xhigh"},
 		{"max", "claude-opus", "xhigh"},
 		{"xhigh", "gpt-5.6-sol", "xhigh"},
+		{"ultra", "gpt-5.6-sol", "high"},
 		{"none", "gpt-5.4", "none"},
 	}
 	for _, tc := range cases {
@@ -2814,13 +2817,116 @@ func TestNormalizeReasoningEffortForModel_MaxGatedByModel(t *testing.T) {
 }
 
 func TestPrepareResponsesBody_MaxEffortPassthroughByModel(t *testing.T) {
-	got, _ := PrepareResponsesBody([]byte(`{"model":"gpt-5.6-sol","input":"hi","reasoning":{"effort":"max"}}`))
-	if effort := gjson.GetBytes(got, "reasoning.effort").String(); effort != "max" {
-		t.Fatalf("gpt-5.6-sol effort = %q, want max; body=%s", effort, got)
+	for _, model := range []string{"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"} {
+		got, _ := PrepareResponsesBody([]byte(fmt.Sprintf(
+			`{"model":%q,"input":"hi","reasoning":{"effort":"max"}}`, model,
+		)))
+		if effort := gjson.GetBytes(got, "reasoning.effort").String(); effort != "max" {
+			t.Fatalf("%s effort = %q, want max; body=%s", model, effort, got)
+		}
 	}
 
-	got, _ = PrepareResponsesBody([]byte(`{"model":"gpt-5.4","input":"hi","reasoning":{"effort":"max"}}`))
+	got, _ := PrepareResponsesBody([]byte(`{"model":"gpt-5.4","input":"hi","reasoning":{"effort":"max"}}`))
 	if effort := gjson.GetBytes(got, "reasoning.effort").String(); effort != "xhigh" {
 		t.Fatalf("gpt-5.4 effort = %q, want xhigh; body=%s", effort, got)
+	}
+}
+
+func TestPrepareResponsesBodyPreservesMultiAgentItemIDs(t *testing.T) {
+	raw := []byte(`{
+		"model":"gpt-5.6-sol",
+		"input":[
+			{"type":"agent_message","id":"agent_msg_1","content":"delegated"},
+			{"type":"multi_agent_call","id":"agent_call_1","name":"spawn_agent"},
+			{"type":"multi_agent_call_output","id":"agent_out_1","call_id":"agent_call_1","output":"done"},
+			{"type":"message","id":"msg_old","role":"user","content":"continue"}
+		]
+	}`)
+
+	got, expandedInputRaw := PrepareResponsesBody(raw)
+	for i, want := range []string{"agent_msg_1", "agent_call_1", "agent_out_1"} {
+		if id := gjson.GetBytes(got, fmt.Sprintf("input.%d.id", i)).String(); id != want {
+			t.Fatalf("input[%d].id = %q, want %q; body=%s", i, id, want, got)
+		}
+		if id := gjson.Get(expandedInputRaw, fmt.Sprintf("%d.id", i)).String(); id != want {
+			t.Fatalf("expanded input[%d].id = %q, want %q; expanded=%s", i, id, want, expandedInputRaw)
+		}
+	}
+	if gjson.GetBytes(got, "input.3.id").Exists() || gjson.Get(expandedInputRaw, "3.id").Exists() {
+		t.Fatalf("legacy message id must still be stripped; body=%s expanded=%s", got, expandedInputRaw)
+	}
+}
+
+func TestTranslateRequest_MaxEffortPassthroughForGPT56Models(t *testing.T) {
+	for _, model := range []string{"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"} {
+		got, err := TranslateRequest([]byte(fmt.Sprintf(
+			`{"model":%q,"messages":[{"role":"user","content":"hi"}],"reasoning_effort":"MAX"}`, model,
+		)))
+		if err != nil {
+			t.Fatalf("TranslateRequest(%s): %v", model, err)
+		}
+		if effort := gjson.GetBytes(got, "reasoning.effort").String(); effort != "max" {
+			t.Fatalf("%s effort = %q, want max; body=%s", model, effort, got)
+		}
+	}
+}
+
+func TestResponsesBodiesPreserveOfficialUltraWireFields(t *testing.T) {
+	raw := []byte(`{
+		"model":"gpt-5.6-sol",
+		"input":"hi",
+		"reasoning_effort":"xhigh",
+		"reasoning":{
+			"effort":"max",
+			"context":"all_turns",
+			"encrypted_content":"opaque-codex-state",
+			"summary":"auto"
+		}
+	}`)
+
+	assertWire := func(t *testing.T, got []byte) {
+		t.Helper()
+		if effort := gjson.GetBytes(got, "reasoning.effort").String(); effort != "max" {
+			t.Fatalf("reasoning.effort = %q, want max; body=%s", effort, got)
+		}
+		if context := gjson.GetBytes(got, "reasoning.context").String(); context != "all_turns" {
+			t.Fatalf("reasoning.context = %q, want all_turns; body=%s", context, got)
+		}
+		if encrypted := gjson.GetBytes(got, "reasoning.encrypted_content").String(); encrypted != "opaque-codex-state" {
+			t.Fatalf("reasoning.encrypted_content = %q; body=%s", encrypted, got)
+		}
+		if gjson.GetBytes(got, "reasoning_effort").Exists() {
+			t.Fatalf("top-level compatibility reasoning_effort must not reach Responses upstream; body=%s", got)
+		}
+	}
+
+	codexBody, _ := PrepareResponsesBody(raw)
+	assertWire(t, codexBody)
+	assertWire(t, PrepareOpenAIResponsesBody(raw))
+}
+
+func TestUpstreamBodiesNeverForwardUltraAsReasoningEffort(t *testing.T) {
+	chatBody, err := TranslateRequest([]byte(`{
+		"model":"gpt-5.6-sol",
+		"messages":[{"role":"user","content":"hi"}],
+		"reasoning_effort":"ultra"
+	}`))
+	if err != nil {
+		t.Fatalf("TranslateRequest: %v", err)
+	}
+
+	responsesBody, _ := PrepareResponsesBody([]byte(`{
+		"model":"gpt-5.6-sol","input":"hi","reasoning":{"effort":"ultra"}
+	}`))
+	relayBody := PrepareOpenAIResponsesBody([]byte(`{
+		"model":"gpt-5.6-sol","input":"hi","reasoning":{"effort":"ultra"}
+	}`))
+
+	for name, got := range map[string][]byte{
+		"chat": chatBody, "codex_responses": responsesBody, "openai_responses": relayBody,
+	} {
+		if effort := gjson.GetBytes(got, "reasoning.effort").String(); effort == "ultra" {
+			t.Fatalf("%s forwarded illegal effort=ultra; body=%s", name, got)
+		}
 	}
 }

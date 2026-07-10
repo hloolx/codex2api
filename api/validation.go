@@ -661,9 +661,11 @@ func ValidateInput() ValidationRule {
 		validTypes := map[string]bool{
 			"message": true,
 			// multi-agent 会话的代理间消息历史项,续会话时随 input 回放,上游原生接受
-			"agent_message": true,
-			"reasoning":     true,
-			"function_call": true,
+			"agent_message":           true,
+			"multi_agent_call":        true,
+			"multi_agent_call_output": true,
+			"reasoning":               true,
+			"function_call":           true,
 			"function_call_output":    true,
 			"tool_call":               true,
 			"local_shell_call":        true,

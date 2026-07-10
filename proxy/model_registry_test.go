@@ -23,6 +23,9 @@ func newTestModelRegistryDB(t *testing.T) *database.DB {
 
 func TestParseOfficialCodexModelIDs(t *testing.T) {
 	html := `
+		<code>codex -m gpt-5.6-sol</code>
+		<code>codex -m gpt-5.6-terra</code>
+		<code>codex -m gpt-5.6-luna</code>
 		<astro-island props="{&quot;name&quot;:[0,&quot;gpt-5.5&quot;]}"></astro-island>
 		<code>codex -m gpt-5.4</code>
 		<code>codex -m gpt-5.3-codex-spark</code>
@@ -31,7 +34,7 @@ func TestParseOfficialCodexModelIDs(t *testing.T) {
 		<code>codex -m gpt-4.1</code>
 	`
 	models, skipped := ParseOfficialCodexModelIDs(html)
-	for _, model := range []string{"gpt-5.5", "gpt-5.4", "gpt-5.3-codex-spark", "gpt-5.2"} {
+	for _, model := range []string{"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4", "gpt-5.3-codex-spark", "gpt-5.2"} {
 		if !slices.Contains(models, model) {
 			t.Fatalf("parsed models missing %q in %v", model, models)
 		}
@@ -46,7 +49,7 @@ func TestParseOfficialCodexModelIDs(t *testing.T) {
 func TestApplyOfficialCodexModelSyncMergesWithBuiltinImageModel(t *testing.T) {
 	db := newTestModelRegistryDB(t)
 	ctx := context.Background()
-	html := `gpt-5.5 gpt-5.4 gpt-5.4-mini gpt-5.3-codex gpt-5.3-codex-spark gpt-5.2 gpt-5.2-codex gpt-4.1`
+	html := `gpt-5.6-sol gpt-5.6-terra gpt-5.6-luna gpt-5.5 gpt-5.4 gpt-5.4-mini gpt-5.3-codex gpt-5.3-codex-spark gpt-5.2 gpt-5.2-codex gpt-4.1`
 
 	result, err := ApplyOfficialCodexModelSync(ctx, db, html, time.Date(2026, 4, 24, 0, 0, 0, 0, time.UTC))
 	if err != nil {
@@ -70,6 +73,15 @@ func TestApplyOfficialCodexModelSyncMergesWithBuiltinImageModel(t *testing.T) {
 	}
 	if spark == nil || !spark.ProOnly {
 		t.Fatalf("spark model should be marked pro_only, got %#v", spark)
+	}
+}
+
+func TestGPT56BuiltinModelsAllowOpenAIResponsesAPIKeys(t *testing.T) {
+	for _, model := range []string{"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"} {
+		info := modelInfoForID(model, ModelSourceBuiltin)
+		if !info.APIKeyAuthAvailable {
+			t.Fatalf("%s should be available through OpenAI Responses API keys", model)
+		}
 	}
 }
 

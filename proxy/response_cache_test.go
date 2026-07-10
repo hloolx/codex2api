@@ -94,6 +94,62 @@ func TestExpandPreviousResponseCachesShellAndApplyPatchCalls(t *testing.T) {
 	}
 }
 
+func TestExpandPreviousResponsePreservesMultiAgentItemIDs(t *testing.T) {
+	resetResponseCacheForTest()
+
+	cacheCompletedResponse("key:1",
+		[]byte(`[`+
+			`{"type":"message","id":"msg_legacy","role":"user","content":"delegate this"},`+
+			`{"type":"agent_message","id":"agent_msg_1","author":"/root","recipient":"/root/worker","content":"working"},`+
+			`{"type":"multi_agent_call_output","id":"ma_output_1","call_id":"ma_call_0","output":"done"}`+
+			`]`),
+		[]byte(`{"type":"response.completed","response":{"id":"resp_multi_agent","output":[`+
+			`{"type":"multi_agent_call","id":"ma_call_1","name":"spawn_agent","arguments":"{}"}`+
+			`]}}`),
+	)
+
+	cached := getResponseCache("key:1", "resp_multi_agent")
+	if len(cached) != 4 {
+		t.Fatalf("cached items = %d, want 4", len(cached))
+	}
+	if id := gjson.GetBytes(cached[0], "id"); id.Exists() {
+		t.Fatalf("legacy message id should still be stripped, got %s", id.Raw)
+	}
+	for i, want := range []struct {
+		typ string
+		id  string
+	}{
+		{typ: "agent_message", id: "agent_msg_1"},
+		{typ: "multi_agent_call_output", id: "ma_output_1"},
+		{typ: "multi_agent_call", id: "ma_call_1"},
+	} {
+		item := gjson.ParseBytes(cached[i+1])
+		if got := item.Get("type").String(); got != want.typ {
+			t.Fatalf("cached[%d].type = %q, want %q", i+1, got, want.typ)
+		}
+		if got := item.Get("id").String(); got != want.id {
+			t.Fatalf("cached[%d].id = %q, want %q", i+1, got, want.id)
+		}
+	}
+
+	body := []byte(`{"model":"gpt-5.6-sol","previous_response_id":"resp_multi_agent","input":[` +
+		`{"type":"multi_agent_call_output","id":"ma_output_2","call_id":"ma_call_1","output":"ok"}` +
+		`]}`)
+	got, prevID := expandPreviousResponse(body, "key:1")
+	if prevID != "resp_multi_agent" {
+		t.Fatalf("prevID = %q, want resp_multi_agent", prevID)
+	}
+	input := gjson.GetBytes(got, "input").Array()
+	if len(input) != 5 {
+		t.Fatalf("expanded input count = %d, want 5; body=%s", len(input), got)
+	}
+	for i, wantID := range []string{"agent_msg_1", "ma_output_1", "ma_call_1", "ma_output_2"} {
+		if gotID := input[i+1].Get("id").String(); gotID != wantID {
+			t.Fatalf("expanded input[%d].id = %q, want %q; body=%s", i+1, gotID, wantID, got)
+		}
+	}
+}
+
 func TestExpandPreviousResponseUsesRuntimeCacheAfterLocalMiss(t *testing.T) {
 	resetResponseCacheForTest()
 	tc := cache.NewMemory(10)

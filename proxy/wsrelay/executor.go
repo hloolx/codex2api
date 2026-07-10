@@ -3,12 +3,15 @@ package wsrelay
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -29,6 +32,88 @@ const (
 	// Codex WebSocket 端点
 	CodexWsEndpoint = "/responses"
 )
+
+func mergeCommaSeparatedValues(values ...string) string {
+	merged := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		for _, token := range strings.Split(value, ",") {
+			token = strings.TrimSpace(token)
+			if token == "" {
+				continue
+			}
+			key := strings.ToLower(token)
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			merged = append(merged, token)
+		}
+	}
+	return strings.Join(merged, ", ")
+}
+
+func customHeaderValue(headers map[string]string, name string) string {
+	for key, value := range headers {
+		if strings.EqualFold(strings.TrimSpace(key), name) {
+			return value
+		}
+	}
+	return ""
+}
+
+func headerValues(headers http.Header, name string) []string {
+	var matched []string
+	for key, values := range headers {
+		if strings.EqualFold(key, name) {
+			matched = append(matched, values...)
+		}
+	}
+	return matched
+}
+
+// websocketBetaCapabilitySignature identifies optional beta capabilities that
+// are frozen into the WebSocket handshake. The mandatory websocket beta is the
+// common baseline and is intentionally omitted, so existing pool keys stay
+// unchanged when no optional capability is requested.
+func websocketBetaCapabilitySignature(headers http.Header) string {
+	capabilities := make([]string, 0, 4)
+	seen := make(map[string]struct{}, 4)
+	appendCapabilities := func(prefix string, values []string, skipRequiredWebsocketBeta bool) {
+		for _, value := range values {
+			for _, token := range strings.Split(value, ",") {
+				token = strings.TrimSpace(token)
+				if token == "" || (skipRequiredWebsocketBeta && strings.EqualFold(token, responsesWebsocketBetaHeader)) {
+					continue
+				}
+				capability := prefix + strings.ToLower(token)
+				if _, ok := seen[capability]; ok {
+					continue
+				}
+				seen[capability] = struct{}{}
+				capabilities = append(capabilities, capability)
+			}
+		}
+	}
+	appendCapabilities("openai-beta:", headerValues(headers, "OpenAI-Beta"), true)
+	appendCapabilities("x-codex-beta-features:", headerValues(headers, "X-Codex-Beta-Features"), false)
+	if len(capabilities) == 0 {
+		return ""
+	}
+	sort.Strings(capabilities)
+	sum := sha256.Sum256([]byte(strings.Join(capabilities, "\n")))
+	return hex.EncodeToString(sum[:8])
+}
+
+// withWebsocketBetaCapability keeps handshake capability variants in separate
+// local connection pools. This value is never used for upstream session or
+// prompt-cache fields.
+func withWebsocketBetaCapability(key, signature string) string {
+	if strings.TrimSpace(key) == "" || strings.TrimSpace(signature) == "" {
+		return key
+	}
+	return key + "|ws-beta=" + signature
+}
 
 func shouldSendWebsocketUserAgent() bool {
 	switch strings.ToLower(strings.TrimSpace(os.Getenv("CODEX_WS_SEND_USER_AGENT"))) {
@@ -148,6 +233,9 @@ func (e *Executor) ExecuteRequestViaWebsocket(
 	if proxy.IsResinEnabled() {
 		headers.Set("X-Resin-Account", proxy.ResinAccountID(account))
 	}
+	capabilitySignature := websocketBetaCapabilitySignature(headers)
+	connectionSessionID := withWebsocketBetaCapability(sessionID, capabilitySignature)
+	connectionPoolRouteKey := withWebsocketBetaCapability(poolRouteKey, capabilitySignature)
 
 	// 获取或创建连接。无显式会话的请求（stateless 连接 ID）在确定性 cache key
 	// 的槽位池内复用连接，避免持续高 RPM 下逐请求握手触发上游限流。
@@ -167,24 +255,24 @@ func (e *Executor) ExecuteRequestViaWebsocket(
 	// 续链亲和：上游无服务端存储时，previous_response_id 的上下文只存活在产出
 	// 该响应的那条 WS 连接里。带续链 ID 的请求优先取回原连接（独占成功才用），
 	// 否则落到随机槽位会触发上游 "previous response not found"。
-	poolSessionID := sessionID
+	poolSessionID := connectionSessionID
 	var wc *WsConnection
 	var pr *PendingRequest
 	var err2 error
 	if prevRespID := strings.TrimSpace(gjson.GetBytes(wsBody, "previous_response_id").String()); prevRespID != "" {
-		if pwc, ppr, slotKey := e.manager.AcquirePreferredConnection(prevRespID, account.ID(), apiKey); pwc != nil {
+		if pwc, ppr, slotKey := e.manager.AcquirePreferredConnection(prevRespID, account.ID(), apiKey, capabilitySignature); pwc != nil {
 			wc, pr, poolSessionID = pwc, ppr, slotKey
 		}
 	}
-	baseKey := strings.TrimSpace(poolRouteKey)
+	baseKey := strings.TrimSpace(connectionPoolRouteKey)
 	if baseKey == "" && headerSessionID != sessionID {
-		baseKey = headerSessionID
+		baseKey = withWebsocketBetaCapability(headerSessionID, capabilitySignature)
 	}
 	if wc == nil {
 		if proxy.IsStatelessWebsocketSessionID(sessionID) && baseKey != "" && !statelessOneShotEnabled() {
-			wc, pr, poolSessionID, err2 = e.manager.AcquireReusableConnection(ctx, account, wsURL, baseKey, sessionID, StatelessConnectionSlots, headers, proxyOverride)
+			wc, pr, poolSessionID, err2 = e.manager.AcquireReusableConnection(ctx, account, wsURL, baseKey, connectionSessionID, StatelessConnectionSlots, headers, proxyOverride)
 		} else {
-			wc, pr, err2 = e.manager.AcquireConnection(ctx, account, wsURL, sessionID, headers, proxyOverride)
+			wc, pr, err2 = e.manager.AcquireConnection(ctx, account, wsURL, connectionSessionID, headers, proxyOverride)
 		}
 	}
 	if err2 != nil {
@@ -271,12 +359,16 @@ func (e *Executor) prepareWebsocketBody(body []byte, sessionID string) []byte {
 // prepareWebsocketHeaders 准备 WebSocket 请求头
 func (e *Executor) prepareWebsocketHeaders(accessToken string, account *auth.Account, accountID, sessionID, apiKey string, deviceCfg *proxy.DeviceProfileConfig, ginHeaders http.Header) http.Header {
 	headers := http.Header{}
+	customHeaders := account.GetCustomHeaders()
 
 	// 认证头
 	headers.Set("Authorization", "Bearer "+accessToken)
 
-	// Beta header 启用 WebSocket 响应 API
-	headers.Set("OpenAI-Beta", responsesWebsocketBetaHeader)
+	// WebSocket beta 是握手必需值；客户端和账号配置中的其他 beta 只能合并，
+	// 不能覆盖或删除该值。
+	openAIBetaValues := append([]string{responsesWebsocketBetaHeader}, headerValues(ginHeaders, "OpenAI-Beta")...)
+	openAIBetaValues = append(openAIBetaValues, customHeaderValue(customHeaders, "OpenAI-Beta"))
+	headers.Set("OpenAI-Beta", mergeCommaSeparatedValues(openAIBetaValues...))
 
 	usedGeneratedHeaders := false
 	if shouldSendWebsocketUserAgent() {
@@ -290,10 +382,13 @@ func (e *Executor) prepareWebsocketHeaders(accessToken string, account *auth.Acc
 			headers.Set("Version", version)
 		}
 	}
-	if betaFeatures := strings.TrimSpace(ginHeaders.Get("X-Codex-Beta-Features")); betaFeatures != "" {
+	betaFeatureValues := append([]string(nil), headerValues(ginHeaders, "X-Codex-Beta-Features")...)
+	if deviceCfg != nil {
+		betaFeatureValues = append(betaFeatureValues, deviceCfg.BetaFeatures)
+	}
+	betaFeatureValues = append(betaFeatureValues, customHeaderValue(customHeaders, "X-Codex-Beta-Features"))
+	if betaFeatures := mergeCommaSeparatedValues(betaFeatureValues...); betaFeatures != "" {
 		headers.Set("X-Codex-Beta-Features", betaFeatures)
-	} else if deviceCfg != nil && strings.TrimSpace(deviceCfg.BetaFeatures) != "" {
-		headers.Set("X-Codex-Beta-Features", strings.TrimSpace(deviceCfg.BetaFeatures))
 	}
 
 	// Originator
@@ -316,9 +411,9 @@ func (e *Executor) prepareWebsocketHeaders(accessToken string, account *auth.Acc
 		headers.Set("Session_id", sessionID)
 		headers.Set("Conversation_id", sessionID)
 	}
-	for name, value := range account.GetCustomHeaders() {
+	for name, value := range customHeaders {
 		name = strings.TrimSpace(name)
-		if name == "" {
+		if name == "" || strings.EqualFold(name, "OpenAI-Beta") || strings.EqualFold(name, "X-Codex-Beta-Features") {
 			continue
 		}
 		headers.Set(name, value)

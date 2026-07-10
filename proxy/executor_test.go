@@ -318,6 +318,28 @@ func TestApplyCodexRequestHeadersUsesSessionIDWithoutConversationID(t *testing.T
 	}
 }
 
+func TestApplyCodexRequestHeadersPreservesDownstreamBetaFeatures(t *testing.T) {
+	req, err := http.NewRequest(http.MethodPost, "https://example.com/v1/responses", nil)
+	if err != nil {
+		t.Fatalf("http.NewRequest() error = %v", err)
+	}
+	acc := &auth.Account{
+		DBID: 42,
+		CustomHeaders: map[string]string{
+			"X-Codex-Beta-Features": "custom_feature, multi_agent",
+		},
+	}
+	downstreamHeaders := http.Header{
+		"X-Codex-Beta-Features": []string{"multi_agent, client_feature"},
+	}
+
+	applyCodexRequestHeaders(req, acc, "token-123", "", "api-key-1", nil, downstreamHeaders)
+
+	if got, want := req.Header.Get("X-Codex-Beta-Features"), "multi_agent, client_feature, custom_feature"; got != want {
+		t.Fatalf("X-Codex-Beta-Features = %q, want %q", got, want)
+	}
+}
+
 func TestApplyCodexRequestHeadersAppliesAccountCustomHeadersLast(t *testing.T) {
 	req, err := http.NewRequest(http.MethodPost, "https://example.com/v1/responses", nil)
 	if err != nil {
@@ -369,6 +391,25 @@ func TestApplyOpenAIResponsesRequestHeadersAppliesAccountCustomHeadersLast(t *te
 	}
 	if got := req.Header.Get("OpenAI-Organization"); got != "org-override" {
 		t.Fatalf("OpenAI-Organization = %q", got)
+	}
+}
+
+func TestApplyOpenAIResponsesRequestHeadersForwardsOpenAIBeta(t *testing.T) {
+	req, err := http.NewRequest(http.MethodPost, "https://relay.example/v1/responses", nil)
+	if err != nil {
+		t.Fatalf("http.NewRequest() error = %v", err)
+	}
+	downstreamHeaders := http.Header{
+		"OpenAI-Beta": []string{"responses_multi_agent=v1", "responses_multi_agent=v1, another_beta=v2"},
+	}
+
+	account := &auth.Account{DBID: 42, CustomHeaders: map[string]string{
+		"OpenAI-Beta": "account_beta=v3, responses_multi_agent=v1",
+	}}
+	applyOpenAIResponsesRequestHeaders(req, account, "relay-token", downstreamHeaders)
+
+	if got, want := req.Header.Get("OpenAI-Beta"), "responses_multi_agent=v1, another_beta=v2, account_beta=v3"; got != want {
+		t.Fatalf("OpenAI-Beta = %q, want %q", got, want)
 	}
 }
 

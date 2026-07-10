@@ -140,25 +140,45 @@ func TestApplyReasoningEffortModelAliasToBody(t *testing.T) {
 	}
 }
 
-// ultra 是预埋的思考强度档位（未来新模型可能支持），必须在 alias 配置与
-// 请求级 effort 归一化中原样透传，而不是被钳位回 high。
-func TestApplyReasoningEffortModelAliasSupportsUltra(t *testing.T) {
+func TestApplyReasoningEffortModelAliasKeepsGPT56MaxIndependent(t *testing.T) {
 	store := auth.NewStore(nil, nil, nil)
-	store.SetReasoningEffortModels(`[{"model":"gpt-5.5","effort":"ultra"}]`)
+	store.SetReasoningEffortModels(`[{"model":"gpt-5.6-sol","effort":"max"}]`)
 	handler := NewHandler(store, nil, nil, nil)
 
 	body, original, effective, mapped := handler.applyConfiguredModelMappingToBody(
-		[]byte(`{"model":"gpt-5.5(ultra)","input":"hello"}`),
-		[]string{"gpt-5.5", "gpt-5.5(ultra)"},
+		[]byte(`{"model":"gpt-5.6-sol(max)","input":"hello"}`),
+		[]string{"gpt-5.6-sol", "gpt-5.6-sol(max)"},
 	)
-	if !mapped {
-		t.Fatal("expected ultra alias to be resolved")
+	if !mapped || original != "gpt-5.6-sol(max)" || effective != "gpt-5.6-sol" {
+		t.Fatalf("alias resolution = mapped:%v original:%q effective:%q", mapped, original, effective)
 	}
-	if original != "gpt-5.5(ultra)" || effective != "gpt-5.5" {
-		t.Fatalf("original/effective = %q/%q, want gpt-5.5(ultra)/gpt-5.5", original, effective)
+	if got := gjson.GetBytes(body, "reasoning.effort").String(); got != "max" {
+		t.Fatalf("reasoning.effort = %q, want independent max; body=%s", got, body)
 	}
-	if got := gjson.GetBytes(body, "reasoning.effort").String(); got != "ultra" {
-		t.Fatalf("reasoning.effort = %q, want ultra; body=%s", got, body)
+	if got := gjson.GetBytes(body, "reasoning_effort").String(); got != "max" {
+		t.Fatalf("reasoning_effort = %q, want independent max; body=%s", got, body)
+	}
+}
+
+// Ultra is a Codex client mode advertised by the upstream model manifest. It
+// must not become a server-side reasoning.effort alias.
+func TestApplyReasoningEffortModelAliasRejectsUltra(t *testing.T) {
+	store := auth.NewStore(nil, nil, nil)
+	store.SetReasoningEffortModels(`[{"model":"gpt-5.6-sol","effort":"ultra"}]`)
+	handler := NewHandler(store, nil, nil, nil)
+
+	body, original, effective, mapped := handler.applyConfiguredModelMappingToBody(
+		[]byte(`{"model":"gpt-5.6-sol(ultra)","input":"hello"}`),
+		[]string{"gpt-5.6-sol", "gpt-5.6-sol(ultra)"},
+	)
+	if mapped {
+		t.Fatal("ultra must not resolve as a server-side effort alias")
+	}
+	if original != "gpt-5.6-sol(ultra)" || effective != original {
+		t.Fatalf("original/effective = %q/%q, want the original model untouched", original, effective)
+	}
+	if gjson.GetBytes(body, "reasoning.effort").Exists() {
+		t.Fatalf("ultra must not be injected into reasoning.effort; body=%s", body)
 	}
 }
 
@@ -170,8 +190,8 @@ func TestNormalizeReasoningEffortLevels(t *testing.T) {
 		"medium":  "medium",
 		"high":    "high",
 		"xhigh":   "xhigh",
-		"ultra":   "ultra",
-		"ULTRA":   "ultra",
+		"ultra":   "high",
+		"ULTRA":   "high",
 		"max":     "xhigh",
 		"unknown": "high",
 		"":        "",

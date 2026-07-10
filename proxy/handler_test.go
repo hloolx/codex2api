@@ -29,6 +29,27 @@ type errReadCloser struct {
 	err error
 }
 
+func TestExtractReasoningEffortMatchesUpstreamWireNormalization(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{name: "sol max canonicalized", body: `{"model":"gpt-5.6-sol","reasoning":{"effort":"MAX","context":"all_turns"}}`, want: "max"},
+		{name: "luna top-level max", body: `{"model":"gpt-5.6-luna","reasoning_effort":"max"}`, want: "max"},
+		{name: "legacy max clamps", body: `{"model":"gpt-5.4","reasoning":{"effort":"max"}}`, want: "xhigh"},
+		{name: "ordinary effort unchanged", body: `{"model":"gpt-5.4","reasoning_effort":"high"}`, want: "high"},
+		{name: "missing effort", body: `{"model":"gpt-5.6-terra"}`, want: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := extractReasoningEffort([]byte(tt.body)); got != tt.want {
+				t.Fatalf("extractReasoningEffort() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func (r errReadCloser) Read([]byte) (int, error) {
 	return 0, r.err
 }
@@ -38,7 +59,7 @@ func (r errReadCloser) Close() error {
 }
 
 func TestSupportedModelsIncludeLatestRequestedModels(t *testing.T) {
-	for _, model := range []string{"gpt-5.5", "gpt-5.3-codex-spark", "gpt-5.2", "gpt-image-2", "gpt-image-2-2k", "gpt-image-2-4k"} {
+	for _, model := range []string{"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.3-codex-spark", "gpt-5.2", "gpt-image-2", "gpt-image-2-2k", "gpt-image-2-4k"} {
 		if !slices.Contains(SupportedModels, model) {
 			t.Fatalf("SupportedModels missing %q", model)
 		}
@@ -83,7 +104,7 @@ func TestListModelsIncludesLatestRequestedModels(t *testing.T) {
 	for _, model := range payload.Data {
 		ids = append(ids, model.ID)
 	}
-	for _, model := range []string{"gpt-5.5", "gpt-5.3-codex-spark", "gpt-5.2", "gpt-image-2"} {
+	for _, model := range []string{"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.3-codex-spark", "gpt-5.2", "gpt-image-2"} {
 		if !slices.Contains(ids, model) {
 			t.Fatalf("/v1/models missing %q in %v", model, ids)
 		}

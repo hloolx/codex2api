@@ -833,13 +833,14 @@ func gjsonResultHasCompactionInput(result gjson.Result) bool {
 // extractReasoningEffort 从请求体提取推理强度
 // 支持 reasoning.effort（Responses API）和 reasoning_effort（Chat Completions API）
 func extractReasoningEffort(body []byte) string {
+	model := gjson.GetBytes(body, "model").String()
 	// Responses API: reasoning.effort
 	if effort := gjson.GetBytes(body, "reasoning.effort").String(); effort != "" {
-		return effort
+		return normalizeReasoningEffortForModel(effort, model)
 	}
 	// Chat Completions API: reasoning_effort
 	if effort := gjson.GetBytes(body, "reasoning_effort").String(); effort != "" {
-		return effort
+		return normalizeReasoningEffortForModel(effort, model)
 	}
 	return ""
 }

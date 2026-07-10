@@ -9,6 +9,7 @@ import (
 
 	"github.com/codex2api/auth"
 	"github.com/gin-gonic/gin"
+	"github.com/tidwall/gjson"
 )
 
 // TestListModelsOrManifest_DispatchesByClientVersion 验证 /models 分发:
@@ -43,7 +44,7 @@ func TestListModelsOrManifest_DispatchesByClientVersion(t *testing.T) {
 }
 
 func TestFetchCodexModelsManifest_PassesThroughBodyAndETag(t *testing.T) {
-	const manifestBody = `{"models":[{"slug":"gpt-5.6-sol"},{"slug":"gpt-5.6-terra"}]}`
+	const manifestBody = `{"models":[{"slug":"gpt-5.6-sol","supported_reasoning_levels":[{"effort":"low"},{"effort":"medium"},{"effort":"high"},{"effort":"xhigh"},{"effort":"max"},{"effort":"ultra"}]},{"slug":"gpt-5.6-terra","supported_reasoning_levels":[{"effort":"low"},{"effort":"medium"},{"effort":"high"},{"effort":"xhigh"},{"effort":"max"},{"effort":"ultra"}]},{"slug":"gpt-5.6-luna","supported_reasoning_levels":[{"effort":"low"},{"effort":"medium"},{"effort":"high"},{"effort":"xhigh"},{"effort":"max"}]}]}`
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if got := r.Header.Get("Authorization"); got != "Bearer at-123" {
@@ -83,6 +84,23 @@ func TestFetchCodexModelsManifest_PassesThroughBodyAndETag(t *testing.T) {
 	}
 	if manifest.ETag != `W/"abc123"` {
 		t.Errorf("ETag = %q, want W/\"abc123\"", manifest.ETag)
+	}
+
+	levelsByModel := make(map[string]map[string]bool)
+	for _, model := range gjson.GetBytes(manifest.Body, "models").Array() {
+		levels := make(map[string]bool)
+		for _, level := range model.Get("supported_reasoning_levels").Array() {
+			levels[level.Get("effort").String()] = true
+		}
+		levelsByModel[model.Get("slug").String()] = levels
+	}
+	for _, model := range []string{"gpt-5.6-sol", "gpt-5.6-terra"} {
+		if !levelsByModel[model]["max"] || !levelsByModel[model]["ultra"] {
+			t.Fatalf("%s manifest levels = %#v, want max and client Ultra", model, levelsByModel[model])
+		}
+	}
+	if !levelsByModel["gpt-5.6-luna"]["max"] || levelsByModel["gpt-5.6-luna"]["ultra"] {
+		t.Fatalf("luna manifest levels = %#v, want max without Ultra", levelsByModel["gpt-5.6-luna"])
 	}
 }
 
