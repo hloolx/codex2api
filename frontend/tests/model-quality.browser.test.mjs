@@ -49,6 +49,13 @@ try {
     assert.equal(await page.locator('.model-quality-verdict .model-quality-fail').count(), 1)
     assert.equal(await page.locator('.model-quality-verdict .model-quality-pass').count(), 1)
     assert.equal(await page.locator('.model-quality-verdict .model-quality-pending').count(), 2)
+    const contrast = await page.locator('.model-quality-verdict .model-quality-fail').evaluate(element => {
+      const canvas = document.createElement('canvas'), ctx = canvas.getContext('2d')
+      const luminance = color => { ctx.clearRect(0, 0, 1, 1); ctx.fillStyle = color; ctx.fillRect(0, 0, 1, 1); const values = [...ctx.getImageData(0, 0, 1, 1).data].slice(0, 3).map(v => { v /= 255; return v <= .04045 ? v / 12.92 : ((v + .055) / 1.055) ** 2.4 }); return values[0] * .2126 + values[1] * .7152 + values[2] * .0722 }
+      const a = luminance(getComputedStyle(element).color), b = luminance(getComputedStyle(element.closest('.model-quality-verdict')).backgroundColor)
+      return (Math.max(a, b) + .05) / (Math.min(a, b) + .05)
+    })
+    assert.ok(contrast >= 4.5, `${device}/${theme} failed verdict contrast ${contrast}`)
     await page.evaluate(async () => { await document.fonts.ready; await Promise.allSettled(document.getAnimations().filter(a => a.effect?.getComputedTiming().iterations !== Infinity).map(a => a.finished)) })
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, `${device}/${theme} overflow`)
     await page.screenshot({ path: fileURLToPath(new URL(`${device}${theme === 'dark' ? '-dark' : ''}.png`, output)), fullPage: true, animations: 'disabled' })
@@ -72,6 +79,13 @@ try {
     await page.getByRole('button', { name: '移除 gpt-6-astra', exact: true }).click()
     await page.getByRole('button', { name: '移除 gpt-6-astra', exact: true }).waitFor({ state: 'hidden' })
     assert.equal(await toggle.isDisabled(), true)
+    await page.locator('#quality-add-model').click()
+    await page.getByRole('option', { name: 'gpt-6-luna', exact: true }).click()
+    await page.getByRole('button', { name: '移除 gpt-6-luna', exact: true }).waitFor()
+    await toggle.click()
+    await page.locator('.model-quality-switch').getByText('已开启', { exact: true }).waitFor()
+    assert.deepEqual(config.models, ['gpt-6-luna'])
+    assert.equal(config.enabled, true)
     assert.deepEqual(errors, [])
     await context.close()
   }

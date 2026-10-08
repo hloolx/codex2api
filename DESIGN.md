@@ -44,3 +44,13 @@
 
 - 共享下拉：`frontend/src/pages/Settings.tsx` ClaudeCode 卡片的时区 / 指纹模式 / 平台 / 版本策略字段。
 - 同步按钮 + 自动同步开关 + 间隔：Settings.tsx 中 Codex "客户端与指纹" 与 ClaudeCode "CLI 版本同步" 区块。
+
+## 6. Automatic model quality checks
+
+- Extend the existing Quality test tabs and shared admin shell. Use the shared `Switch`, `Select`, `Input`, `Button`, and `Pagination`; visible labels and accessible names use the same keys in all three locales.
+- Keep the configuration panel above account groups. Separate accounts with borders; place each model verdict on the inherited muted surface. Reuse the application's card, border, and muted-text variables across light and dark themes.
+- **The Labeled Verdict Rule.** Pair every verdict color with a status label and Lucide icon. Pass/fail colors adapt to the theme; pending, unsupported, and disabled-monitoring states use neutral treatment. Keep error reasons distinct from the verdict.
+- Use the existing compact hierarchy: section titles, account names, and model/status details descend in emphasis. Check timestamps use tabular numerals; long account names, model identifiers, and reasons wrap.
+- **The Account Group Rule.** Model verdicts remain grouped under their account. The verdict grid fits the available width; at the existing phone breakpoint the configuration controls and toolbar stack and the search input shrinks to fit.
+
+Evidence: `frontend/src/pages/ModelQualityGuard.tsx`, `frontend/src/pages/model-quality.css`, and the automatic-check tab in `frontend/src/pages/QualityTest.tsx`.

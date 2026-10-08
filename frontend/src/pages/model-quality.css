@@ -22,7 +22,7 @@
 .model-quality-legend span, .model-quality-verdict-heading > span { display: inline-flex; align-items: center; gap: 6px; }
 .model-quality-legend svg, .model-quality-verdict-heading svg { width: 14px; height: 14px; flex-shrink: 0; }
 .model-quality-pass { color: light-dark(#18713d, #78d9a0); }
-.model-quality-fail { color: var(--color-destructive); }
+.model-quality-fail { color: light-dark(#b42318, #ff9990); }
 .model-quality-pending, .model-quality-unsupported { color: var(--color-muted-foreground); }
 .model-quality-account { padding: 20px 0; border-top: 1px solid var(--color-border); }
 .model-quality-account-name { display: flex; align-items: baseline; flex-wrap: wrap; gap: 10px; font-size: 14px; margin-bottom: 12px; }
