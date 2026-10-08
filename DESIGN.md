@@ -54,3 +54,5 @@
 - **The Account Group Rule.** Model verdicts remain grouped under their account. The verdict grid fits the available width; at the existing phone breakpoint the configuration controls and toolbar stack and the search input shrinks to fit.
 
 Evidence: `frontend/src/pages/ModelQualityGuard.tsx`, `frontend/src/pages/model-quality.css`, and the automatic-check tab in `frontend/src/pages/QualityTest.tsx`.
+
+- **The Separate Execution Rule.** Quality verdicts state whether this guard restricts calls. A separate line explains account recovery, model cooldown, retry eligibility, occupied capacity, another model in progress, the next schedule, or queued work. Never describe a failed benchmark as stopping future checks. Cooldowns retain a retest queue action and a route to account management; queuing does not bypass account restrictions.

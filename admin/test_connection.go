@@ -395,6 +395,9 @@ func (h *Handler) testConnection(c *gin.Context, quality *qualityTestRequest) {
 			}
 			// Successful tests reset failure/cooldown state; the scheduler still enforces usage limits.
 			// Temporary recycle-bin accounts must not update scheduling state.
+			if !isTransient && (quality == nil || !quality.modelQualityProbe) {
+				h.store.ClearUnsupportedModelSince(account, testModel, start)
+			}
 			if !isTransient && (quality == nil || !quality.modelQualityProbe) && (isOpenAIResponsesAccount || usageState.UsageWindowLimitsIgnored || (!usageState.Premium5hRateLimited && (!usageState.HasUsage7d || usageState.UsagePct7d < 100))) {
 				h.store.RecordManualTestSuccess(account, time.Since(start))
 			}

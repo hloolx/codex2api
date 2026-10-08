@@ -8,6 +8,13 @@ export type ModelQualityState = {
   checked_at: number
   next_check_at: number
   running: boolean
+  execution?: 'disabled' | 'running' | 'unsupported' | 'account_unavailable' | 'model_cooldown' | 'scheduled' | 'waiting_account' | 'waiting_capacity' | 'queued'
+  account_status?: string
+  cooldown_reason?: string
+  resume_at?: number
+  occupied?: number
+  capacity?: number
+  can_retest?: boolean
 }
 export type ModelQualityData = {
   config: ModelQualityConfig
@@ -17,4 +24,6 @@ export type ModelQualityData = {
   page: number
   page_size: number
   interval_seconds: number
+  last_scan_at?: number
+  scheduling_error?: boolean
 }
