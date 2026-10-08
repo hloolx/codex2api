@@ -134,7 +134,7 @@ func (db *DB) SaveModelQualityConfig(ctx context.Context, cfg ModelQualityConfig
 }
 
 func (db *DB) EnsureModelQualityState(ctx context.Context, id, generation int64, model string) error {
-	_, err := db.conn.ExecContext(ctx, `INSERT INTO model_quality_states(account_id,model,generation) SELECT $1,$2,$3 FROM accounts WHERE id=$1 AND credential_generation=$3 ON CONFLICT(account_id,model) DO UPDATE SET generation=$3,next_check_at=0 WHERE model_quality_states.generation<>$3`, id, model, generation)
+	_, err := db.conn.ExecContext(ctx, `INSERT INTO model_quality_states(account_id,model,generation) SELECT id,$2,credential_generation FROM accounts WHERE id=$1 AND credential_generation=$3 ON CONFLICT(account_id,model) DO UPDATE SET generation=$3,next_check_at=0 WHERE model_quality_states.generation<>$3`, id, model, generation)
 	return err
 }
 
