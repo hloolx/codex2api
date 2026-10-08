@@ -27,3 +27,18 @@ without color. Phone layouts must not overflow.
 Browser review fixtures use only synthetic `example.test` identities and
 invented states. Those fixtures validate presentation and interactions, not
 the accuracy of a real upstream model's benchmark performance.
+
+## Dedicated host IPv6 egress
+
+The Proxies administration page adds optional dedicated host IPv6 egress for
+native Codex accounts. Administrators choose existing local addresses, address
+cooldown, retry limits, and whether transient 5xx responses rotate the source.
+Temporary rate limits and connection failures can rotate an account independently.
+Authentication, hard quota, input errors and quality verdicts stay separate.
+The panel must expose configuration, pool availability, persisted account/IP
+bindings, the last rotation cause and time, and clear failed-save/empty states.
+Disabling restores existing proxy routing. Addresses are never created by the
+application; exhausted pools fail closed. Requests with visible output or reported
+usage are not replayed. The existing Operate design system and shared controls
+remain authoritative; this is a narrow expansion of an incumbent administration
+page, with no new visual-world or comp selection.

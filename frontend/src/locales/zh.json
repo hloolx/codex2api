@@ -7605,5 +7605,41 @@
       "codex": "Codex",
       "basispoints": "Basispoints"
     }
+  },
+  "ipv6Egress": {
+    "title": "主机 IPv6 独立出口",
+    "description": "每个 Codex 账号固定使用一个主机 IPv6。连接失败或限流时冷却旧地址，换用空闲地址重试；原代理设置保留，关闭后恢复。",
+    "enable": "启用主机 IPv6 出口",
+    "loading": "正在读取出口状态…",
+    "on": "已启用",
+    "off": "未启用",
+    "counts": "地址池 {{total}} · 可分配 {{available}} · 冷却中 {{cooling}}",
+    "resin": "Resin 正在接管出口，请先关闭 Resin 后再启用本功能。",
+    "noLocal": "容器内没有公网 IPv6。请检查主机地址与容器网络模式。",
+    "sources": "IPv6 地址池",
+    "sourcesPlaceholder": "留空使用容器内全部公网 IPv6",
+    "sourcesHint": "每行一个已配置在主机上的地址。不会自动创建地址；地址耗尽时停止出站，等待冷却或补充地址。",
+    "cooldown": "地址冷却（秒）",
+    "attempts": "单次最多尝试次数",
+    "retry5xx": "上游 500 / 502 / 503 / 504 时也换 IP",
+    "retryHint": "默认包含连接失败与临时 429。账号失效、额度耗尽、参数错误不换 IP；开始输出后不重放。5xx 并不证明 IP 异常，也不判为降智。",
+    "save": "保存出口设置",
+    "saved": "设置已生效",
+    "bindings": "账号绑定（{{count}}）",
+    "search": "搜索账号或 IPv6",
+    "empty": "首次请求时自动分配独立 IPv6，绑定会显示在这里。",
+    "noMatch": "没有匹配的账号或地址。",
+    "waiting": "地址冷却中，等待可用出口",
+    "assigned": "已绑定",
+    "rotations": "已切换 {{count}} 次",
+    "reason": {
+      "assigned": "首次分配",
+      "http_429": "临时限流",
+      "http_500": "上游 500",
+      "http_502": "上游 502",
+      "http_503": "上游 503",
+      "http_504": "上游 504",
+      "connect_failed": "连接失败"
+    }
   }
 }

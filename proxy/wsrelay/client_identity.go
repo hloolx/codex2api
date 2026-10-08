@@ -3,6 +3,7 @@ package wsrelay
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"github.com/codex2api/proxy"
 	"net/http"
 	"strings"
 )
@@ -26,11 +27,12 @@ type websocketContinuation struct {
 	accountID  int64
 	apiKey     string
 	identity   string
+	route      string
 }
 
 func (e *Executor) acquireClientContinuation(input websocketContinuation) (*WsConnection, *PendingRequest, string) {
 	connection, pending, key := e.manager.AcquirePreferredConnection(input.responseID, input.accountID, input.apiKey)
-	if connection == nil || connection.upstreamClientIdentity == input.identity {
+	if connection == nil || (connection.upstreamClientIdentity == input.identity && connection.ipv6Route == ipv6ContinuationRoute(input.route)) {
 		return connection, pending, key
 	}
 	if !connection.cancelUnsentReadLease(pending.RequestID) {
@@ -38,4 +40,11 @@ func (e *Executor) acquireClientContinuation(input websocketContinuation) (*WsCo
 	}
 	connection.session.RemovePendingRequest(pending.RequestID)
 	return nil, nil, ""
+}
+
+func ipv6ContinuationRoute(route string) string {
+	if proxy.IsIPv6Route(route) {
+		return route
+	}
+	return ""
 }

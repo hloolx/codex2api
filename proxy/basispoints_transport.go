@@ -17,7 +17,7 @@ func getBasispointsClient(account *auth.Account, proxyURL string) (*http.Client,
 	if v, ok := clientPool.Load(key); ok {
 		entry := v.(*poolEntry)
 		entry.touch()
-		return entry.client, nil
+		return wrapIPv6Client(account, entry.client, true, false), nil
 	}
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.ResponseHeaderTimeout = 0
@@ -38,7 +38,7 @@ func getBasispointsClient(account *auth.Account, proxyURL string) (*http.Client,
 		entry = v.(*poolEntry)
 		entry.touch()
 	}
-	return entry.client, nil
+	return wrapIPv6Client(account, entry.client, true, false), nil
 }
 
 func recycleBasispointsClient(account *auth.Account, proxyURL string) {

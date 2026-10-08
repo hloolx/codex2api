@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -31,6 +32,9 @@ const (
 // 避免 auth → proxy 循环依赖。参数: (originalURL, accountIdentifier) → (newURL)
 // 调用方需在返回的 req 上设置 X-Resin-Account header。
 var ResinRequestDecorator func(targetURL, accountID string) string
+
+// CodexHTTPClientDecorator applies the dedicated source route without replaying OAuth.
+var CodexHTTPClientDecorator func(int64, *http.Client, bool) *http.Client
 
 // TokenData 保存一次 RT 刷新获得的 token 信息
 type TokenData struct {
@@ -88,6 +92,11 @@ func RefreshAccessToken(ctx context.Context, refreshToken string, proxyURL strin
 		client = &http.Client{Timeout: 30 * time.Second}
 	} else {
 		client = buildHTTPClient(proxyURL)
+	}
+	if CodexHTTPClientDecorator != nil {
+		if id, parseErr := strconv.ParseInt(accountID, 10, 64); parseErr == nil && id > 0 {
+			client = CodexHTTPClientDecorator(id, client, false)
+		}
 	}
 	resp, err := client.Do(req)
 	if err != nil {
@@ -230,6 +239,11 @@ func RefreshWithSessionToken(ctx context.Context, sessionToken string, proxyURL 
 		client = &http.Client{Timeout: 30 * time.Second}
 	} else {
 		client = buildUTLSHTTPClient(proxyURL)
+	}
+	if CodexHTTPClientDecorator != nil {
+		if id, parseErr := strconv.ParseInt(accountID, 10, 64); parseErr == nil && id > 0 {
+			client = CodexHTTPClientDecorator(id, client, true)
+		}
 	}
 	resp, err := client.Do(req)
 	if err != nil {

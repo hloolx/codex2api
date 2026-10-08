@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/codex2api/database"
+	"github.com/codex2api/egressipv6"
 	"github.com/codex2api/internal/openaiidentity"
 )
 
@@ -73,7 +74,7 @@ func (s *Store) refreshCodexAccount(ctx context.Context, acc *Account, force boo
 		}
 	}
 	proxyURL := s.ResolveProxyForAccount(acc)
-	if strings.TrimSpace(proxyURL) == "" && s.GetProxyPoolEnabled() {
+	if strings.TrimSpace(proxyURL) == "" && s.GetProxyPoolEnabled() && !egressipv6.Enabled() && !ResinEgressEnabled() {
 		return fmt.Errorf("账号 %d 代理池已启用但无可用代理，已拒绝直连刷新", dbID)
 	}
 	if err := ctx.Err(); err != nil {

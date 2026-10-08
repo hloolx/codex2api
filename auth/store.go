@@ -22,6 +22,7 @@ import (
 
 	"github.com/codex2api/cache"
 	"github.com/codex2api/database"
+	"github.com/codex2api/egressipv6"
 	"github.com/codex2api/internal/openaiidentity"
 	"github.com/codex2api/security/promptfilter"
 )
@@ -4931,7 +4932,7 @@ func (s *Store) resolveProxyForAccountSnapshot(acc *Account) (string, bool) {
 		accountID = acc.DBID
 		accountProxy = strings.TrimSpace(acc.ProxyURL)
 		groupIDs = cloneInt64Slice(acc.GroupIDs)
-		resinCarriesEgress = ResinEgressEnabled() && !acc.isRelayStyleLocked()
+		resinCarriesEgress = (ResinEgressEnabled() || egressipv6.Enabled()) && !acc.isRelayStyleLocked()
 		acc.mu.RUnlock()
 	}
 

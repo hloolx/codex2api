@@ -2652,5 +2652,41 @@
       "codex": "Codex",
       "basispoints": "Basispoints"
     }
+  },
+  "ipv6Egress": {
+    "title": "主機 IPv6 獨立出口",
+    "description": "每個 Codex 帳號固定使用一個主機 IPv6。連線失敗或限流時冷卻舊位址，換用閒置位址重試；原代理設定保留，關閉後恢復。",
+    "enable": "啟用主機 IPv6 出口",
+    "loading": "正在讀取出口狀態…",
+    "on": "已啟用",
+    "off": "未啟用",
+    "counts": "位址池 {{total}} · 可分配 {{available}} · 冷卻中 {{cooling}}",
+    "resin": "Resin 正在接管出口，請先關閉 Resin 再啟用本功能。",
+    "noLocal": "容器內沒有公網 IPv6。請檢查主機位址與容器網路模式。",
+    "sources": "IPv6 位址池",
+    "sourcesPlaceholder": "留空使用容器內全部公網 IPv6",
+    "sourcesHint": "每行一個已設定於主機的位址。不會自動建立位址；位址耗盡時停止出站，等待冷卻或補充位址。",
+    "cooldown": "位址冷卻（秒）",
+    "attempts": "單次最多嘗試次數",
+    "retry5xx": "上游 500 / 502 / 503 / 504 時也換 IP",
+    "retryHint": "預設包含連線失敗與暫時 429。帳號失效、額度耗盡、參數錯誤不換 IP；開始輸出後不重放。5xx 並不證明 IP 異常，也不判為降智。",
+    "save": "儲存出口設定",
+    "saved": "設定已生效",
+    "bindings": "帳號綁定（{{count}}）",
+    "search": "搜尋帳號或 IPv6",
+    "empty": "首次請求時自動分配獨立 IPv6，綁定會顯示在這裡。",
+    "noMatch": "沒有符合的帳號或位址。",
+    "waiting": "位址冷卻中，等待可用出口",
+    "assigned": "已綁定",
+    "rotations": "已切換 {{count}} 次",
+    "reason": {
+      "assigned": "首次分配",
+      "http_429": "暫時限流",
+      "http_500": "上游 500",
+      "http_502": "上游 502",
+      "http_503": "上游 503",
+      "http_504": "上游 504",
+      "connect_failed": "連線失敗"
+    }
   }
 }
