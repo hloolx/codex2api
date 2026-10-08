@@ -391,6 +391,13 @@ export function buildGuides(baseUrl: string, locale: DocsLocale): GuideSpec[] {
             ),
           ],
           [
+            "503 · account_pool_concurrency_saturated",
+            c(
+              "匹配账号都在，但并发窗口已满。稍后重试，或提高单账号并发上限。",
+              "Matching accounts exist, but their concurrency windows are full. Retry shortly or raise the per-account concurrency limit.",
+            ),
+          ],
+          [
             "503 · account_pool_usage_limit_reached",
             c(
               "上游账号池额度耗尽；参考 Retry-After，等待重置或补充可用账号。",

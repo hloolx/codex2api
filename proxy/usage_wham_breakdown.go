@@ -170,8 +170,7 @@ func queryWhamDailyTokenBreakdownWithURL(ctx context.Context, account *auth.Acco
 	}
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("User-Agent", MinimalCodexCLIUserAgentForHeaders())
-	req.Header.Set("Originator", Originator)
+	ResolveCodexMaintenanceIdentity(account, nil).Apply(req.Header)
 	// 与 counts 一致：自定义头覆盖工作区 ID 时查覆盖后的空间。个人号 account_id
 	// 为空，不带这个头上游同样正常返回。
 	if accountID := account.EffectiveAccountID(); accountID != "" {

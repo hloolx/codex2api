@@ -457,7 +457,7 @@ type EnhancedRateLimiter struct {
 
 	// 指标收集
 	metricsEnabled bool
-	totalLimited   int64 // 被限流的总请求数
+	totalLimited   atomic.Int64 // 被限流的总请求数
 }
 
 // NewEnhancedRateLimiter 创建增强型限流器
@@ -506,7 +506,7 @@ func (erl *EnhancedRateLimiter) AllowWithContext(accountID, model string) bool {
 
 	// 1. 检查全局限流
 	if !erl.globalLimiter.allow() {
-		atomic.AddInt64(&erl.totalLimited, 1)
+		erl.totalLimited.Add(1)
 		return false
 	}
 
@@ -526,7 +526,7 @@ func (erl *EnhancedRateLimiter) AllowWithContext(accountID, model string) bool {
 			erl.mu.RLock()
 		}
 		if !accLimiter.allow() {
-			atomic.AddInt64(&erl.totalLimited, 1)
+			erl.totalLimited.Add(1)
 			return false
 		}
 	}
@@ -547,7 +547,7 @@ func (erl *EnhancedRateLimiter) AllowWithContext(accountID, model string) bool {
 			erl.mu.RLock()
 		}
 		if !modelLimiter.allow() {
-			atomic.AddInt64(&erl.totalLimited, 1)
+			erl.totalLimited.Add(1)
 			return false
 		}
 	}
@@ -646,7 +646,7 @@ func (erl *EnhancedRateLimiter) GetAllMetrics() map[string]interface{} {
 
 	result := map[string]interface{}{
 		"global":        erl.globalLimiter.getMetrics(),
-		"total_limited": atomic.LoadInt64(&erl.totalLimited),
+		"total_limited": erl.totalLimited.Load(),
 	}
 
 	accountMetrics := make(map[string]LimitMetrics)

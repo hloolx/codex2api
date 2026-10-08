@@ -89,7 +89,7 @@ func TestChannelTestSettingsRejectsInvalidModels(t *testing.T) {
 func TestConnectionTestUsesChannelSettingsForAntigravity(t *testing.T) {
 	store := auth.NewStore(nil, nil, nil)
 	account := newAntigravityConnectionTestAccount()
-	account.Models = []string{"gemini-3.5-flash-extra-low", "gemini-3.5-flash-low", "gemini-3-flash-agent", "claude-sonnet-4-6"}
+	account.Models = []string{"gemini-3.6-flash-low", "gemini-3.6-flash-medium", "gemini-3.6-flash-high", "claude-sonnet-4-6"}
 	store.AddAccount(account)
 	handler := &Handler{store: store}
 	handler.channelTestCfg.Store(&database.ChannelTestConfig{
@@ -108,7 +108,7 @@ func TestConnectionTestUsesChannelSettingsForAntigravity(t *testing.T) {
 	// 配置的模型不在账号目录时退回自动选模，而不是报错。
 	handler.channelTestCfg.Store(&database.ChannelTestConfig{Antigravity: database.ChannelTestSettings{TestModel: "gemini-9-flash-low"}})
 	model, err = handler.connectionTestModelForAccount(context.Background(), account, "")
-	if err != nil || model != "gemini-3.5-flash-low" {
+	if err != nil || model != "gemini-3.6-flash-low" {
 		t.Fatalf("fallback model=%q err=%v", model, err)
 	}
 }

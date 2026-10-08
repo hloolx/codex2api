@@ -331,6 +331,7 @@ const (
 	continuousRetryProtocolResponses
 	continuousRetryProtocolChat
 	continuousRetryProtocolAnthropic
+	continuousRetryProtocolGemini
 )
 
 func installContinuousRetryHTTPDeadline(c *gin.Context, policy database.ContinuousRetryPolicy, protocol continuousRetryHTTPProtocol) func() {
@@ -377,6 +378,10 @@ func writeContinuousRetryTimeoutResponse(c *gin.Context, protocol continuousRetr
 		writeContinuousRetryLastFailure(c, protocol, failure)
 		return true
 	}
+	if protocol == continuousRetryProtocolGemini {
+		writeGeminiNativeError(c, http.StatusGatewayTimeout, continuousRetryTimeoutMessage)
+		return true
+	}
 	if retryKeepaliveCommitted(c) {
 		switch protocol {
 		case continuousRetryProtocolResponses:
@@ -407,6 +412,10 @@ func writeContinuousRetryLastFailure(c *gin.Context, protocol continuousRetryHTT
 	message := usageLogErrorMessage(status, failure.body)
 	if message == "" {
 		message = fmt.Sprintf("Upstream returned HTTP %d", status)
+	}
+	if protocol == continuousRetryProtocolGemini {
+		writeGeminiNativeError(c, status, message)
+		return
 	}
 	code := fmt.Sprintf("upstream_%d", status)
 	if retryKeepaliveCommitted(c) {

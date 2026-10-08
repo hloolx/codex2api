@@ -10,7 +10,9 @@ import (
 	"fmt"
 	stdimage "image"
 	"image/png"
+	"os"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -372,7 +374,11 @@ var (
 
 func GlobalUpscaleCache() *UpscaleCache {
 	globalUpscaleCacheOnce.Do(func() {
-		globalUpscaleCache = NewUpscaleCache(512*1024*1024, 4)
+		budget := int64(512)
+		if value, err := strconv.ParseInt(os.Getenv("IMAGE_UPSCALE_CACHE_MB"), 10, 64); err == nil && value >= 1 && value <= 4096 {
+			budget = value
+		}
+		globalUpscaleCache = NewUpscaleCache(budget*1024*1024, 4)
 	})
 	return globalUpscaleCache
 }

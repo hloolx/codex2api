@@ -11,8 +11,8 @@ import (
 )
 
 func TestIsSparkUsagePlanFoldsProlite(t *testing.T) {
-	if !IsSparkUsagePlan("pro") || !IsSparkUsagePlan("prolite") || !IsSparkUsagePlan("ProLite") {
-		t.Fatal("pro/prolite should show a spark usage bar")
+	if !IsSparkUsagePlan("pro") || !IsSparkUsagePlan("prolite") || !IsSparkUsagePlan("ProLite") || !IsSparkUsagePlan("promax") {
+		t.Fatal("pro/prolite/promax should show a spark usage bar")
 	}
 	if IsSparkUsagePlan("plus") || IsSparkUsagePlan("free") {
 		t.Fatal("plus/free should not show a spark usage bar")

@@ -2,6 +2,7 @@ package imagestore
 
 import (
 	"container/list"
+	"os"
 	"strconv"
 	"sync"
 )
@@ -33,6 +34,9 @@ type thumbEntry struct {
 func NewThumbnailCache(capBytes int64) *ThumbnailCache {
 	if capBytes <= 0 {
 		capBytes = 64 * 1024 * 1024
+		if value, err := strconv.ParseInt(os.Getenv("IMAGE_THUMB_CACHE_MB"), 10, 64); err == nil && value >= 1 && value <= 1024 {
+			capBytes = value * 1024 * 1024
+		}
 	}
 	return &ThumbnailCache{
 		ll:       list.New(),

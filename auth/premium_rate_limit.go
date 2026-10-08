@@ -4,7 +4,6 @@ import (
 	"context"
 	"log"
 	"strings"
-	"sync/atomic"
 	"time"
 )
 
@@ -17,16 +16,23 @@ const premium5hCooldownReason = "rate_limited_5h"
 const ResponsesRateLimitedCooldownReason = "responses_rate_limited"
 
 // NormalizePlanType canonicalizes a plan string for behavior-level comparisons.
-// OpenAI reports the $100 Pro tier as "prolite"; functionally it is a Pro plan
-// with a smaller usage cap, so we fold it into "pro" so that downstream plan
-// gating (premium 5h rate-limit, Spark routing, scheduler bias, 429 cooldown
-// window) treats it identically. The raw value is kept in Account.PlanType so
-// the UI can still render "prolite" for operator visibility.
+// OpenAI reports the $100 Pro tier as "prolite" and the top Pro tier as
+// "promax"; functionally both are Pro plans with a different usage cap, so we
+// fold them into "pro" so that downstream plan gating (premium 5h rate-limit,
+// Spark routing, scheduler bias, 429 cooldown window) treats them identically.
+// The raw value is kept in Account.PlanType so the UI can still render
+// "prolite"/"promax" for operator visibility. Enterprise and Edu SKUs
+// (ent26, enterprise_cbp_*, edu_plus, edu_pro) fold into their family the
+// same way.
 func NormalizePlanType(plan string) string {
 	normalized := strings.ToLower(strings.TrimSpace(plan))
 	switch normalized {
-	case "prolite", "pro_lite", "pro-lite":
+	case "prolite", "pro_lite", "pro-lite", "promax", "pro_max", "pro-max":
 		return "pro"
+	case "ent26", "enterprise_cbp_usage_based", "enterprise_cbp_automation":
+		return "enterprise"
+	case "edu_plus", "edu_pro":
+		return "edu"
 	default:
 		return normalized
 	}
@@ -229,7 +235,7 @@ func (s *Store) ClearAbsentUsageSnapshot5hAt(acc *Account, observedAt time.Time)
 		}
 	}
 	if s != nil {
-		acc.recomputeSchedulerLocked(atomic.LoadInt64(&s.maxConcurrency))
+		acc.recomputeSchedulerLocked(s.maxConcurrency.Load())
 	}
 	acc.mu.Unlock()
 
@@ -331,7 +337,7 @@ func (s *Store) markPremium5hRateLimited(acc *Account, resetAt, observedAt time.
 	if acc.HealthTier != HealthTierBanned {
 		acc.HealthTier = HealthTierRisky
 	}
-	acc.recomputeSchedulerLocked(atomic.LoadInt64(&s.maxConcurrency))
+	acc.recomputeSchedulerLocked(s.maxConcurrency.Load())
 	acc.mu.Unlock()
 
 	s.fastSchedulerUpdate(acc)

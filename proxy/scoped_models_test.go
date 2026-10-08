@@ -71,8 +71,8 @@ func TestScopedModelsAppliesKeyAccountAndHardGrokGates(t *testing.T) {
 	if len(models) != 1 || models[0].ID != "grok-allowed" || models[0].Owner != "xai" {
 		t.Fatalf("models = %+v, want only xai grok-allowed", models)
 	}
-	if allowed.ActiveRequests != 0 || allowed.TotalRequests != 0 {
-		t.Fatalf("model listing reserved account: active=%d total=%d", allowed.ActiveRequests, allowed.TotalRequests)
+	if allowed.ActiveRequests.Load() != 0 || allowed.TotalRequests.Load() != 0 {
+		t.Fatalf("model listing reserved account: active=%d total=%d", allowed.ActiveRequests.Load(), allowed.TotalRequests.Load())
 	}
 }
 

@@ -49,8 +49,19 @@ const (
 	antigravityModelCapacityCooldown      = 10 * time.Second
 
 	antigravityDefaultRateLimitCooldown = 30 * time.Second
-	antigravityDefaultQuotaCooldown     = 5 * time.Minute
-	antigravityMaxQuotaCooldown         = 30 * time.Minute
+	// antigravityUnclassifiedRateLimitCooldown backs off a 429 that carries no
+	// google.rpc detail at all. Cloud Code answers with a bare
+	// {"code":429,"status":"RESOURCE_EXHAUSTED"} when it sheds load, and that
+	// body names neither a reason nor a retry delay, so nothing in it points at
+	// the credential that received it. Charging it the full default bench is
+	// what turns a shared upstream saturation into a self-inflicted outage:
+	// every account handed the same bare 429 leaves the rotation, and a 30s
+	// absence per account empties the pool. Stay above
+	// antigravityInstantRetryThreshold so the request is not spun in place, but
+	// short enough that the rotation refills.
+	antigravityUnclassifiedRateLimitCooldown = 5 * time.Second
+	antigravityDefaultQuotaCooldown          = 5 * time.Minute
+	antigravityMaxQuotaCooldown              = 30 * time.Minute
 
 	// antigravityGeminiFamilyCooldownKey is the synthetic model key that a
 	// QUOTA_EXHAUSTED on any Gemini model also cools down. Cloud Code meters
@@ -294,7 +305,9 @@ func antigravityNonPenalizingUpstreamFailure(account *auth.Account, statusCode i
 
 // applyAntigravityCooldown turns a Cloud Code 429/503 into a per-(account,
 // model) cooldown sized from the upstream retry hint. Unrecognised 429 bodies
-// fall back to the generic relay-style cooldown policy.
+// fall back to the generic relay-style cooldown policy, and a recognised body
+// that carries no hint at all is backed off briefly instead of being charged
+// the full default bench.
 func applyAntigravityCooldown(store *auth.Store, account *auth.Account, statusCode int, body []byte, resp *http.Response, model string) codex429Decision {
 	quota, ok := parseAntigravityQuotaError(statusCode, body)
 	if !ok {
@@ -317,9 +330,19 @@ func applyAntigravityCooldown(store *auth.Store, account *auth.Account, statusCo
 		}
 	default:
 		decision.Reason = "rate_limited_model"
-		cooldown = antigravityDefaultRateLimitCooldown
-		if quota.HasRetryDelay && quota.RetryDelay > 0 {
+		switch {
+		case quota.HasRetryDelay && quota.RetryDelay > 0:
+			// Google told us exactly how long to wait.
 			cooldown = quota.RetryDelay
+		case quota.Reason != "":
+			// A named rate limit (RATE_LIMIT_EXCEEDED) without a delay is still
+			// an account-level signal, so keep the conservative default.
+			cooldown = antigravityDefaultRateLimitCooldown
+		default:
+			// A bare RESOURCE_EXHAUSTED: no ErrorInfo, no RetryInfo. Nothing in
+			// it says this credential is the reason, so back off briefly rather
+			// than taking the account out of rotation for the full bench.
+			cooldown = antigravityUnclassifiedRateLimitCooldown
 		}
 	}
 	if resp != nil && !quota.HasRetryDelay {

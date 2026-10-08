@@ -94,7 +94,7 @@ func TestAntigravityPublishedChoicesExcludeInternalAndDuplicateBackings(t *testi
 	for _, model := range collapseAntigravityModelChoices(records) {
 		got[model.ID] = true
 	}
-	want := map[string]bool{"gemini-3.6-flash": true, "gemini-3.8-flash": true, "gemini-3.1-flash-lite": true, "gemini-Future-V4": true, "gemini-2.5-pro": true}
+	want := map[string]bool{"gemini-3.6-flash": true, "gemini-3.8-flash": true, "gemini-3.1-flash-lite": true, "gemini-Future-V4": true}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("chat catalog = %v, want %v", got, want)
 	}

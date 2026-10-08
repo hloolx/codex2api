@@ -17,9 +17,7 @@ type upstreamTraceAttempt struct {
 	accountID int64
 	requestID string
 	proxy     auth.ProxyAuditLabel
-	// injectedTurnState 是本次尝试实际注入到出站请求上的凭据级 X-Codex-Turn-State；
-	// upstreamTurnState 是上游响应回带的观测值。均为空串表示没有。
-	injectedTurnState string
+	// upstreamTurnState 是上游响应回带的 X-Codex-Turn-State，空串表示没有。
 	upstreamTurnState string
 }
 
@@ -44,7 +42,6 @@ func snapshotUpstreamTrace(ctx context.Context) upstreamTraceSnapshot {
 		result.accountID = a.current.accountID
 		result.UpstreamRequestID = a.current.requestID
 		result.Proxy = a.current.proxy
-		result.InjectedTurnState = a.current.injectedTurnState
 		result.UpstreamTurnState = a.current.upstreamTurnState
 	}
 	return result
@@ -118,7 +115,7 @@ func beginUpstreamTrace(ctx context.Context, account *auth.Account, proxyURL str
 		label = auth.ProxyAuditLabel{Name: "resin"}
 	}
 	label.Name = security.MaskSensitiveData(label.Name)
-	attempt := &upstreamTraceAttempt{accountID: account.ID(), proxy: label, injectedTurnState: CodexTurnStateInjectionFromContext(ctx)}
+	attempt := &upstreamTraceAttempt{accountID: account.ID(), proxy: label}
 	a.mu.Lock()
 	a.current = attempt
 	a.mu.Unlock()
@@ -189,7 +186,6 @@ func populateUpstreamTrace(c *gin.Context, input *database.UsageLogInput) {
 		input.UpstreamRequestID = current.requestID
 		input.UpstreamProxyID = current.proxy.ID
 		input.UpstreamProxyName = current.proxy.Name
-		input.InjectedTurnState = current.injectedTurnState
 		input.UpstreamTurnState = current.upstreamTurnState
 	}
 }

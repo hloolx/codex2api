@@ -1,4 +1,5 @@
 import { useEffect, useState, type MouseEvent } from "react";
+import { formatBeijingTime, getTimezone } from "../utils/time";
 import { useTranslation } from "react-i18next";
 import { CloudOff, RefreshCw } from "lucide-react";
 import { api, AdminAPIError } from "../api";
@@ -52,17 +53,15 @@ function formatDateTime(iso: string | undefined, locale: string): string {
     day: "2-digit",
     hour: "2-digit",
     minute: "2-digit",
+    timeZone: getTimezone(),
   });
 }
 
-/** 本机时区的 YYYY-MM-DD(徽章里只放日期,精确时刻放悬停提示)。 */
+/** 显示时区的 YYYY-MM-DD(徽章里只放日期,精确时刻放悬停提示)。 */
 function formatDate(iso: string | undefined): string {
   if (!iso) return "-";
-  const ts = Date.parse(iso);
-  if (Number.isNaN(ts)) return iso;
-  const d = new Date(ts);
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  if (Number.isNaN(Date.parse(iso))) return iso;
+  return formatBeijingTime(iso).slice(0, 10);
 }
 
 /** 决定徽章文案与颜色;返回 null 表示这条账号不需要展示徽章。 */

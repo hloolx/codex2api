@@ -249,7 +249,7 @@ func (s *Store) BuildFastScheduler() *FastScheduler {
 	if s == nil {
 		return NewFastScheduler(1, "round_robin")
 	}
-	scheduler := NewFastScheduler(atomic.LoadInt64(&s.maxConcurrency), s.GetSchedulerMode())
+	scheduler := NewFastScheduler(s.maxConcurrency.Load(), s.GetSchedulerMode())
 	s.configureFastScheduler(scheduler)
 
 	s.mu.RLock()
@@ -837,7 +837,7 @@ func (a *Account) fastSchedulerSnapshotForSpark(baseLimit int64, now time.Time) 
 
 	tier := a.healthTierLocked()
 	score := a.DispatchScore
-	proven := atomic.LoadInt64(&a.TotalRequests) > 10
+	proven := a.TotalRequests.Load() > 10
 	if score == 0 && a.SchedulerScore != 0 {
 		score = a.SchedulerScore
 	}
@@ -850,7 +850,7 @@ func (a *Account) fastSchedulerSnapshotForSpark(baseLimit int64, now time.Time) 
 	if baseConcurrencyEffective <= 0 {
 		baseConcurrencyEffective = a.effectiveBaseConcurrencyLocked(baseLimit)
 	}
-	limit := concurrencyLimitForTier(baseConcurrencyEffective, tier)
+	limit := a.tierConcurrencyLimitLocked(baseConcurrencyEffective, tier)
 	// sparkDispatchEligibleLocked 与 isAvailableLocked 一样只看锁内状态;
 	// DispatchPaused 是锁外原子标志,标准快照在这里显式补一道门,spark 必须
 	// 对齐,否则运维手动停调度或过载熔断置位的账号仍会被 spark 请求选中。
@@ -878,7 +878,7 @@ func (a *Account) fastSchedulerSnapshotWithUsageOverride(baseLimit int64, now ti
 	tier := a.healthTierLocked()
 	score := a.DispatchScore
 	limit := a.DynamicConcurrencyLimit
-	proven := atomic.LoadInt64(&a.TotalRequests) > 10
+	proven := a.TotalRequests.Load() > 10
 
 	if score == 0 && a.SchedulerScore != 0 {
 		score = a.SchedulerScore
@@ -893,7 +893,7 @@ func (a *Account) fastSchedulerSnapshotWithUsageOverride(baseLimit int64, now ti
 		if baseConcurrencyEffective <= 0 {
 			baseConcurrencyEffective = a.effectiveBaseConcurrencyLocked(baseLimit)
 		}
-		limit = a.quotaAutoPause5hGuardConcurrencyLimitLocked(concurrencyLimitForTier(baseConcurrencyEffective, tier), now)
+		limit = a.quotaAutoPause5hGuardConcurrencyLimitLocked(a.tierConcurrencyLimitLocked(baseConcurrencyEffective, tier), now)
 		limit = a.smartPacingConcurrencyLimitLocked(limit, now)
 	}
 
@@ -932,7 +932,7 @@ func tryAcquireAccount(acc *Account, limit int64) bool {
 	if !reserveOccupiedAccountSlot(acc, limit) {
 		return false
 	}
-	atomic.AddInt64(&acc.TotalRequests, 1)
-	atomic.StoreInt64(&acc.LastUsedAt, time.Now().UnixNano())
+	acc.TotalRequests.Add(1)
+	acc.LastUsedAt.Store(time.Now().UnixNano())
 	return true
 }

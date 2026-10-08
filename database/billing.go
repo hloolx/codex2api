@@ -5,8 +5,10 @@ import "strings"
 const longContextThreshold = 272000
 
 type ModelPricing struct {
-	UserBillingMode                 string
-	ImageUnitPrice                  float64
+	UserBillingMode string
+	ImageUnitPrice  float64
+	// MediaUnitCost 是媒体模型的上游单位成本(USD/张 或 USD/秒,见 MediaBillingUnit)。
+	MediaUnitCost                   float64
 	ImageInputPricePerMToken        float64
 	CacheReadImagePricePerMToken    float64
 	InputPricePerMToken             float64
@@ -32,6 +34,11 @@ type ModelPricing struct {
 	// 留空用全局 longContextThreshold（OpenAI 的 272K）；xAI Grok 的分档线是 200K，
 	// 需在规则里单独声明，否则 200K~272K 区间会按短档少算。
 	LongContextThresholdTokens int
+
+	// UltrafastMultiplier 是模型自有的 Ultrafast 档倍率(相对 standard 价)。
+	// 大于 0 时 ultrafast 请求按 standard 价乘此倍率计费,不走 Fast 的 2× 与
+	// priority 价;为 0 的模型 ultrafast 继续跟随 Fast 策略。不参与价格覆盖。
+	UltrafastMultiplier float64
 }
 
 type modelPricingRule struct {
@@ -64,12 +71,46 @@ var (
 	defaultModelPricing = &ModelPricing{InputPricePerMToken: 1.0, OutputPricePerMToken: 2.0}
 
 	modelPricingRules = []modelPricingRule{
-		// gpt-6-astra：Codex 长上下文例外，超过 272K 仍按 $10/$50、缓存 $1。
-		// 保留现有 fast（priority）2× 倍率，由 serviceTierCostMultiplier 兜底。
+		// GPT-6 Sol/Luna 使用官方标准价和超过 272K 的长上下文价，fast 档沿用 2×。
+		{model: "gpt-6-sol", pricing: ModelPricing{
+			InputPricePerMToken:         2.0,
+			OutputPricePerMToken:        10.0,
+			CacheReadPricePerMToken:     0.2,
+			LongInputPricePerMToken:     4.0,
+			LongOutputPricePerMToken:    15.0,
+			LongCacheReadPricePerMToken: 0.4,
+		}},
+		// gpt-6.1-sol 是独立型号：缓存读取 $0.10、缓存写入 $2.50，
+		// 超过 272K 按输入/缓存 2×、输出 1.5×。不能落入未知 gpt-6 变体的 Astra 兜底。
+		{model: "gpt-6.1-sol", pricing: ModelPricing{
+			InputPricePerMToken:         2.0,
+			OutputPricePerMToken:        10.0,
+			CacheReadPricePerMToken:     0.1,
+			CacheWrite5mPricePerMToken:  2.5,
+			CacheWrite1hPricePerMToken:  2.5,
+			LongInputPricePerMToken:     4.0,
+			LongOutputPricePerMToken:    15.0,
+			LongCacheReadPricePerMToken: 0.2,
+		}},
+		{model: "gpt-6-luna", pricing: ModelPricing{
+			InputPricePerMToken:         0.1,
+			OutputPricePerMToken:        0.5,
+			CacheReadPricePerMToken:     0.01,
+			LongInputPricePerMToken:     0.2,
+			LongOutputPricePerMToken:    0.75,
+			LongCacheReadPricePerMToken: 0.02,
+		}},
+		// gpt-6-astra：超过 272K 按长上下文价计费（输入/缓存 2×、输出 1.5×），
+		// 即 $20/$75、缓存 $2。fast（priority）2× 倍率由 serviceTierCostMultiplier 兜底；
+		// Ultrafast 档按所处档位 standard 价的 6× 计费。
 		{model: "gpt-6-astra", pricing: ModelPricing{
-			InputPricePerMToken:     10.0,
-			OutputPricePerMToken:    50.0,
-			CacheReadPricePerMToken: 1.0,
+			InputPricePerMToken:         10.0,
+			OutputPricePerMToken:        50.0,
+			CacheReadPricePerMToken:     1.0,
+			LongInputPricePerMToken:     20.0,
+			LongOutputPricePerMToken:    75.0,
+			LongCacheReadPricePerMToken: 2.0,
+			UltrafastMultiplier:         6.0,
 		}},
 		{model: "gpt-5.5", pricing: ModelPricing{
 			InputPricePerMToken:                 5.0,
@@ -186,8 +227,18 @@ var (
 		// （grok-3-fast / grok-2）保留既有公开价，缓存价未公开的留空
 		// （留空 = 缓存 token 按输入价计）。任何一条都可在定价页覆盖。
 		// Grok 的长上下文分档线是 200K，与 OpenAI 的 272K 不同，逐条声明。
-		// grok-4.6 必须独立成条：否则会命中 grok-4 前缀被当成 $3/$15。
-		// 短档 $2/$6、缓存 $0.50；≥200K 长档 $4/$12、缓存 $1.00（与 grok-4.5 同输入/输出，缓存更高）。
+		// grok-4.7 / grok-4.6 必须独立成条：否则会命中 grok-4 前缀被当成 $3/$15。
+		// 两代同价：短档 $2/$6、缓存 $0.50；≥200K 长档 $4/$12、缓存 $1.00（与 grok-4.5 同输入/输出，缓存更高）。
+		// grok-4.7 价格来源 models.dev xai/grok-4.7（2026-09-21 发布，上下文 500K）。
+		{model: "grok-4.7", pricing: ModelPricing{
+			InputPricePerMToken:         2.0,
+			OutputPricePerMToken:        6.0,
+			CacheReadPricePerMToken:     0.5,
+			LongInputPricePerMToken:     4.0,
+			LongOutputPricePerMToken:    12.0,
+			LongCacheReadPricePerMToken: 1.0,
+			LongContextThresholdTokens:  200000,
+		}},
 		{model: "grok-4.6", pricing: ModelPricing{
 			InputPricePerMToken:         2.0,
 			OutputPricePerMToken:        6.0,
@@ -247,6 +298,9 @@ var (
 
 func GetModelPricing(model string) *ModelPricing {
 	normalized := normalizeBillingModelName(model)
+	if alias := daybreakPricingAliasKey(model); alias != "" && alias != normalized {
+		return daybreakAliasPricing(normalized, alias)
+	}
 	canonical := normalized
 	if imageModel := GPTImage25BillingModel(normalized); imageModel != "" {
 		canonical = imageModel
@@ -254,7 +308,17 @@ func GetModelPricing(model string) *ModelPricing {
 	if codexModel, ok := normalizeCodexBillingModel(normalized); ok {
 		canonical = codexModel
 	}
+	if key := GrokMediaPricingKey(normalized); key != "" {
+		canonical = key
+	}
 	base := baseModelPricing(normalized, canonical)
+	// 新型号沿用兜底基础价，但覆盖必须独立，不能继承另一个型号的手工价格。
+	if key := discoveredGPTPricingKey(normalized); key != "" {
+		canonical = key
+		if override, ok := lookupModelPricingOverride(key); ok && override.Input > 0 && override.Output > 0 {
+			base = &ModelPricing{}
+		}
+	}
 
 	// custom / synced 覆盖：以代码默认为底，合并非 0 字段（部分覆盖）。
 	// 覆盖表拷贝到本地副本再改，绝不改动共享的默认 pricing 指针。
@@ -270,7 +334,7 @@ func GetModelPricing(model string) *ModelPricing {
 	canonicalOv, hasCanonical := lookupModelPricingOverride(canonical)
 	var aliasOv ModelPricingOverride
 	hasAlias := false
-	aliasKey := PricingManagementModelKey(normalized)
+	aliasKey := PricingManagementModelKey(model)
 	if aliasKey != "" && aliasKey != canonical {
 		if ov, ok := lookupModelPricingOverride(aliasKey); ok {
 			if ov.Source == ModelPricingSourceCustom || !hasCanonical || canonicalOv.Source != ModelPricingSourceCustom {
@@ -294,6 +358,9 @@ func GetModelPricing(model string) *ModelPricing {
 // baseModelPricing 返回代码内置的模型定价（不含覆盖）。normalized 为归一化后的模型名，
 // canonical 为 codex 归一后的规范名（用于规则表查找）。
 func baseModelPricing(normalized, canonical string) *ModelPricing {
+	if key := GrokMediaPricingKey(normalized); key != "" {
+		return grokMediaBasePricing(key)
+	}
 	if GPTImage25BillingModel(canonical) != "" {
 		return &gptImage25Pricing
 	}
@@ -373,7 +440,9 @@ func CalculateCostBreakdownWithCacheWrites(inputTokens, outputTokens, cachedToke
 	}
 
 	tierMultiplier := serviceTierCostMultiplier(serviceTier)
-	if usePriorityPricing(serviceTier, pricing) {
+	if normalizeServiceTier(serviceTier) == "ultrafast" && pricing.UltrafastMultiplier > 0 {
+		tierMultiplier = pricing.UltrafastMultiplier
+	} else if usePriorityPricing(serviceTier, pricing) {
 		tierMultiplier = 1
 		if isLong && pricing.LongInputPricePerMTokenPriority > 0 {
 			inputPrice = pricing.LongInputPricePerMTokenPriority
@@ -459,13 +528,20 @@ func normalizeBillingModelName(model string) string {
 	} else if idx := strings.LastIndex(model, "/"); idx != -1 {
 		model = model[idx+1:]
 	}
+	// Daybreak 的规范计费模型仍是基础模型，专属价格覆盖由别名键处理。
+	model = strings.TrimSuffix(strings.TrimSuffix(model, "-daybreak-blue"), "-daybreak-red")
 	return strings.TrimLeft(model, "/")
 }
 
 func normalizeCodexBillingModel(model string) (string, bool) {
 	compact := strings.NewReplacer(" ", "-", "_", "-").Replace(strings.ToLower(model))
 	switch {
-	// gpt-6 世代（官方定价页 2026-09）：目前只有 astra 一个公开型号，
+	case strings.HasPrefix(compact, "gpt-6-sol") || strings.HasPrefix(compact, "gpt6-sol"):
+		return "gpt-6-sol", true
+	case strings.HasPrefix(compact, "gpt-6.1-sol") || strings.HasPrefix(compact, "gpt6.1-sol"):
+		return "gpt-6.1-sol", true
+	case strings.HasPrefix(compact, "gpt-6-luna") || strings.HasPrefix(compact, "gpt6-luna"):
+		return "gpt-6-luna", true
 	// 未知 gpt-6 变体按 astra 兜底，避免掉进 $1/$2 的默认价严重低估。
 	// 只认 gpt-6- / gpt-6. / 裸 gpt-6 前缀，gpt-5.6 不含 "gpt-6" 不会误命中。
 	case strings.HasPrefix(compact, "gpt-6-") || strings.HasPrefix(compact, "gpt-6.") || compact == "gpt-6" ||
@@ -623,7 +699,8 @@ func usePriorityPricing(serviceTier string, pricing *ModelPricing) bool {
 func serviceTierCostMultiplier(serviceTier string) float64 {
 	switch normalizeServiceTier(serviceTier) {
 	// Ultrafast follows this gateway's Fast pricing policy, including custom
-	// priority prices. This is a billing default, not an official tariff claim.
+	// priority prices, unless the model declares its own UltrafastMultiplier.
+	// This is a billing default, not an official tariff claim.
 	case "priority", "fast", "ultrafast":
 		return 2.0
 	case "flex":

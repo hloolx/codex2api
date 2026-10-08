@@ -177,6 +177,12 @@
 .pricing-image-price { display: grid; grid-template-columns: minmax(0, 190px) minmax(0, 1fr); align-items: end; gap: 16px; margin-top: 14px; }
 .pricing-image-price > label { min-width: 0; }
 .pricing-image-price > label > span { display: block; margin-bottom: 6px; font-size: 11px; font-weight: 550; }
+.pricing-media-editor { display: grid; gap: 12px; margin-bottom: 4px; }
+.pricing-media-editor .pricing-image-billing { margin-bottom: 0; }
+.pricing-media-unpriced { display: inline-flex; align-items: center; gap: 4px; color: var(--pricing-warning); font: 600 12px var(--font-sans); }
+.pricing-image-summary strong.pricing-media-unpriced { font: 600 12px var(--font-sans); color: var(--pricing-warning); }
+.pricing-media-revert { display: inline-flex; margin-left: 6px; vertical-align: middle; color: var(--pricing-muted); }
+.pricing-media-revert:hover { color: var(--pricing-ink); }
 .pricing-image-price input { background: var(--color-card); font: 16px var(--font-mono); }
 
 /* Align the fixed save bar with Layout's existing sidebar grid. */

@@ -705,6 +705,7 @@ func (g *scopeBudgetGate) exhaustedMessage() string {
 // applyScopeBudgetFilter 把本次请求的 scope 预算闸门叠加到账号过滤链上。
 // 未配 scope 限额或全部 scope 都有余额时原样返回。
 func (h *Handler) applyScopeBudgetFilter(c *gin.Context, filter auth.AccountFilter) auth.AccountFilter {
+	filter = daybreakAccountFilter(c, filter)
 	gate := scopeBudgetGateFromContext(c)
 	if gate == nil {
 		return filter

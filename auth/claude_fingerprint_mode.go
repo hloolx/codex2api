@@ -3,7 +3,6 @@ package auth
 import (
 	"encoding/json"
 	"strings"
-	"sync/atomic"
 	"time"
 )
 
@@ -185,12 +184,12 @@ func (s *Store) SetClaudeSessionWindowLimit(n int64) {
 	if n < 0 {
 		n = 0
 	}
-	atomic.StoreInt64(&s.claudeSessionWindowLimit, n)
+	s.claudeSessionWindowLimit.Store(n)
 }
 
 // ClaudeSessionWindowLimit 返回 Claude 账号默认并发会话窗口数(0=跟随全局 maxConcurrency)。
 func (s *Store) ClaudeSessionWindowLimit() int64 {
-	return atomic.LoadInt64(&s.claudeSessionWindowLimit)
+	return s.claudeSessionWindowLimit.Load()
 }
 
 // CLIVersionSyncEnabledValue 把缺失字段解释为开启，避免老配置静默关闭同步。

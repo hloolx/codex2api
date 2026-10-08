@@ -1,8 +1,11 @@
 package auth
 
 import (
+	"reflect"
 	"testing"
 	"time"
+
+	"github.com/codex2api/database"
 )
 
 func TestGrokRoutingStateCatalogBackendBeatsCrossProtocolProbe(t *testing.T) {
@@ -136,5 +139,49 @@ func TestGrokRoutingEnforcesCatalogVisibilityOnDirectDispatch(t *testing.T) {
 	}
 	if _, ok := oauthAccount.GetGrokModelRoute("oauth-model", GrokProtocolResponses, now); !ok {
 		t.Fatal("OAuth dispatch incorrectly rejected supportedInApi=false model")
+	}
+}
+
+func TestNormalizeGrokReasoningMenuDropsUnknownTiers(t *testing.T) {
+	got := NormalizeGrokReasoningMenu([]string{" XHigh ", "high", "not-a-tier", "high", "minimal"})
+	want := []string{"xhigh", "high", "minimal"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("menu = %#v, want %#v", got, want)
+	}
+	if NormalizeGrokReasoningMenu([]string{"extra", ""}) != nil {
+		t.Fatal("unknown-only menu must be nil so callers keep the static fold")
+	}
+}
+
+func TestGrokReasoningMenuFromPersistentCatalog(t *testing.T) {
+	now := time.Now()
+	account := &Account{UpstreamType: UpstreamGrok, CredentialGeneration: 1}
+	applyGrokPersistentState(account, &database.GrokAccountState{
+		CredentialGeneration: 1,
+		Catalogs: []database.GrokModelCatalog{{
+			Snapshot: database.GrokModelCatalogSnapshot{
+				CredentialGeneration: 1,
+				ObservedAt:           now,
+				ExpiresAt:            now.Add(time.Hour),
+			},
+			Items: []database.GrokModelCatalogItem{{
+				ModelID:              "grok-4.7",
+				CredentialGeneration: 1,
+				ReasoningEffort:      "high",
+				ReasoningEfforts:     []string{"XHigh", "high", "not-a-tier", "minimal"},
+			}},
+		}},
+	})
+	got := account.GrokReasoningMenu("GROK-4.7")
+	want := []string{"xhigh", "high", "minimal"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("menu = %#v, want %#v", got, want)
+	}
+	if account.GrokReasoningMenu("grok-4.5") != nil {
+		t.Fatal("missing model must not invent a menu")
+	}
+	models := account.GrokCatalogModels()
+	if len(models) != 1 || models[0].ReasoningEffort != "high" {
+		t.Fatalf("catalog default effort not projected: %#v", models)
 	}
 }

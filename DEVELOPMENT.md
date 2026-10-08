@@ -1,8 +1,11 @@
 # Local Development on Windows
 
-This checkout includes upstream `main` at `de41a5e3` and the State management
-extensions published in `hloolx/codex2api`. Releases retain both upstream
-credential-level Turn State injection and managed account/model state reuse.
+This checkout includes upstream `main` at `b1bfe1b4` (v3.0.7 plus nine commits)
+and the State management and Basispoints extensions published in
+`hloolx/codex2api`. Releases retain credential-level Turn State injection,
+managed account/model state reuse, and the fork's per-key upstream routing.
+See [the integration report](docs/upstream-sync-20261008.md) for compatibility
+decisions and validation.
 
 Requirements: Go with automatic toolchain selection (the project requires
 1.26.6), Node.js 22.12 or newer, npm, and PowerShell.

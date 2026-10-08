@@ -19,6 +19,15 @@ const antigravityShortRateLimitBody = `{"error":{"code":429,"message":"Resource 
 
 const antigravityModelCapacityBody = `{"error":{"code":503,"message":"The model is overloaded.","status":"UNAVAILABLE","details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"MODEL_CAPACITY_EXHAUSTED","metadata":{"model":"gemini-pro-agent"}}]}}`
 
+// A bare RESOURCE_EXHAUSTED: no ErrorInfo, no RetryInfo. This is the shape
+// Cloud Code returns when it sheds load, and it names neither a reason nor a
+// retry delay, so it says nothing about the credential that received it.
+const antigravityUnclassifiedRateLimitBody = `{"error":{"code":429,"message":"Resource has been exhausted (e.g. check quota).","status":"RESOURCE_EXHAUSTED"}}`
+
+// A named RATE_LIMIT_EXCEEDED with no RetryInfo: Google attributes the limit
+// but gives no timing hint.
+const antigravityReasonOnlyRateLimitBody = `{"error":{"code":429,"message":"Rate limit exceeded.","status":"RESOURCE_EXHAUSTED","details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"RATE_LIMIT_EXCEEDED","metadata":{"model":"gemini-3.7-flash-tiered"}}]}}`
+
 func stubAntigravitySleep(t *testing.T) *[]time.Duration {
 	t.Helper()
 	previous := antigravitySleep
@@ -187,5 +196,50 @@ func TestApplyAntigravityCooldownUsesRetryDelayAndGeminiFamilyKey(t *testing.T) 
 	decision = applyAntigravityCooldown(store, generic, http.StatusTooManyRequests, []byte(`{"error":{"message":"slow down"}}`), &http.Response{Header: http.Header{}}, "gemini-3.7-flash-high")
 	if decision.Reason != "rate_limited_model" {
 		t.Fatalf("unstructured 429 should fall back to the relay policy, got %+v", decision)
+	}
+}
+
+func TestApplyAntigravityCooldownBacksOffBrieflyWhenGoogleGivesNoHint(t *testing.T) {
+	store := newProxyPremiumTestStore()
+
+	quota, ok := parseAntigravityQuotaError(http.StatusTooManyRequests, []byte(antigravityUnclassifiedRateLimitBody))
+	if !ok || quota.Kind != antigravityQuotaKindRateLimit || quota.Reason != "" || quota.HasRetryDelay {
+		t.Fatalf("bare RESOURCE_EXHAUSTED parse = %+v ok=%v, want a hint-less rate limit", quota, ok)
+	}
+
+	unclassified := &auth.Account{DBID: 7301, UpstreamType: auth.UpstreamAntigravity, AccessToken: "google-token", AntigravityProjectID: "google-project"}
+	decision := applyAntigravityCooldown(store, unclassified, http.StatusTooManyRequests, []byte(antigravityUnclassifiedRateLimitBody), nil, "gemini-3.7-flash-high")
+	if decision.Reason != "rate_limited_model" || decision.Model != "gemini-3.7-flash-high" {
+		t.Fatalf("decision = %+v", decision)
+	}
+	if decision.Cooldown <= 0 || decision.Cooldown > antigravityUnclassifiedRateLimitCooldown {
+		t.Fatalf("cooldown = %s, want a short back-off no longer than %s", decision.Cooldown, antigravityUnclassifiedRateLimitCooldown)
+	}
+	// The pair still steps out of rotation, just briefly: with no cooldown at
+	// all the scheduler would hand this account the next request and collect
+	// another 429.
+	if !unclassified.IsModelRateLimited("gemini-3.7-flash-high") {
+		t.Fatal("a bare 429 must still bench the (account, model) pair")
+	}
+	// Unlike a real QUOTA_EXHAUSTED, it must not poison the shared Gemini key.
+	if antigravityAccountModelRateLimited(unclassified, "claude-sonnet-4-6", "claude-sonnet-4-6") {
+		t.Fatal("a hint-less 429 must not cool down unrelated models")
+	}
+
+	// A named RATE_LIMIT_EXCEEDED with no delay keeps the conservative bench.
+	named := &auth.Account{DBID: 7302, UpstreamType: auth.UpstreamAntigravity, AccessToken: "google-token", AntigravityProjectID: "google-project"}
+	decision = applyAntigravityCooldown(store, named, http.StatusTooManyRequests, []byte(antigravityReasonOnlyRateLimitBody), nil, "gemini-3.7-flash-high")
+	if decision.Cooldown < antigravityDefaultRateLimitCooldown-time.Second {
+		t.Fatalf("cooldown = %s, want the conservative %s default for a named rate limit", decision.Cooldown, antigravityDefaultRateLimitCooldown)
+	}
+}
+
+func TestApplyAntigravityCooldownPrefersRetryAfterHeaderOverTheShortBackOff(t *testing.T) {
+	store := newProxyPremiumTestStore()
+	account := &auth.Account{DBID: 7303, UpstreamType: auth.UpstreamAntigravity, AccessToken: "google-token", AntigravityProjectID: "google-project"}
+	resp := &http.Response{Header: http.Header{"Retry-After": []string{"12"}}}
+	decision := applyAntigravityCooldown(store, account, http.StatusTooManyRequests, []byte(antigravityUnclassifiedRateLimitBody), resp, "gemini-3.7-flash-high")
+	if decision.Cooldown < 11*time.Second || decision.Cooldown > 12*time.Second {
+		t.Fatalf("cooldown = %s, want the 12s Retry-After header instead of the short back-off", decision.Cooldown)
 	}
 }

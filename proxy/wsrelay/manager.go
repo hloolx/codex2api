@@ -39,6 +39,7 @@ type WsConnection struct {
 	// 不能用当前配置重新推导，否则设置变更后会记录并未发送的 UA。
 	upstreamUserAgent      string
 	upstreamUserAgentKnown bool
+	upstreamClientIdentity string
 
 	// 创建/复用该连接的账号。仅用于读取当前动态并发上限，让 response_id
 	// 续链复用路径也能在账号上限下调后收敛空闲连接数。
@@ -1222,7 +1223,8 @@ func (m *Manager) createConnection(
 	// 拨号代理与 ExecuteRequestViaWebsocket 同一套判定:Resin 承担出站时不配代理
 	// (传入的 wsURL 已是 Resin 反代地址);poolKey 仍按第 2 层代理分池,保持既有键不变。
 	proxyURL := effectiveProxyURL(account, proxyOverride)
-	if dialProxy := proxy.CodexDialProxyURL(account, proxyURL); dialProxy != "" {
+	dialProxy := proxy.CodexDialProxyURL(account, proxyURL)
+	if dialProxy != "" {
 		if err := configureWebsocketDialerProxy(dialer, dialProxy); err != nil {
 			return nil, err
 		}
@@ -1257,6 +1259,7 @@ func (m *Manager) createConnection(
 	wc.PoolKey = poolKey
 	wc.upstreamUserAgent = strings.TrimSpace(headers.Get("User-Agent"))
 	wc.upstreamUserAgentKnown = true
+	wc.upstreamClientIdentity = websocketClientIdentity(headers)
 	wc.httpResp = resp
 	wc.onDisconnected = m.getOnDisconnected()
 	wc.onReadFailure = m.DiscardConnection

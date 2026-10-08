@@ -279,7 +279,11 @@ func snapshotCodexTelemetryClient(input codexTelemetryRequest) (codexTelemetryCl
 	if input.proxyOverride != "" {
 		client.proxyURL = input.proxyOverride
 	}
-	client.userAgent, client.version, _ = ResolveCodexOutboundClientHeadersWithDecision(input.account, input.apiKey, input.deviceCfg, input.headers)
+	identity, err := ResolveCodexOutboundClientIdentity(CodexClientIdentityInput{Account: input.account, APIKey: input.apiKey, DeviceConfig: input.deviceCfg, Headers: input.headers})
+	if err != nil {
+		return codexTelemetryClient{}, false
+	}
+	client.userAgent, client.version = identity.UserAgent, identity.Version
 	client.originator = codexTelemetryOriginator(client.userAgent, input.headers)
 	userAgentOverridden, originatorOverridden := false, false
 	for name, value := range input.account.GetCustomHeaders() {

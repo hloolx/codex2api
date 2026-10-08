@@ -472,7 +472,7 @@ export default function Docs() {
 
   useEffect(() => {
     api
-      .getAPIKeys()
+      .getAPIKeys({ view: 'lite' })
       .then((res) => {
         const keys = (res.keys ?? []).map((k) => ({
           name: k.name,

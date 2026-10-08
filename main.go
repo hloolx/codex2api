@@ -124,6 +124,7 @@ func main() {
 			ImageStorageConfig:                "{}",
 			PublicKeyUsagePageEnabled:         true,
 			PublicImageStudioPageEnabled:      true,
+			ShowUpstreamModelMismatch:         true,
 			CodexWSHideUpstreamErrors:         true,
 			CodexWSSilentRetryEnabled:         true,
 			CodexWSSilentMaxRetries:           2,
@@ -176,6 +177,7 @@ func main() {
 			ImageStorageConfig:                "{}",
 			PublicKeyUsagePageEnabled:         true,
 			PublicImageStudioPageEnabled:      true,
+			ShowUpstreamModelMismatch:         true,
 			CodexWSHideUpstreamErrors:         true,
 			CodexWSSilentRetryEnabled:         true,
 			CodexWSSilentMaxRetries:           2,
@@ -234,6 +236,9 @@ func main() {
 		auth.SetConfiguredAntigravitySettings(parsed)
 		if len(parsed.ModelRedirects) > 0 {
 			log.Printf("Antigravity 模型重定向已加载: %d 条", len(parsed.ModelRedirects))
+		}
+		if parsed.ExposeThoughts {
+			log.Printf("Antigravity 思考内容下发已开启")
 		}
 	}
 	antigravityCfgCancel()
@@ -382,6 +387,8 @@ func main() {
 	// Basispoints inbound images: embedded base64 images become self-hosted signed
 	// HTTPS links (imagestore + /p/img) and are swept after their retention window.
 	proxy.StartBasispointsImageHost(backgroundCtx, db)
+	// Schedule per-account Responses channel health and rate probes.
+	adminHandler.StartChannelMonitor(backgroundCtx)
 
 	// 后台定时同步 Codex CLI 模拟版本（启动即拉一次，之后按设置的间隔）；
 	// 出上游新版本门槛时无需发版即可跟进。开关/间隔在设置页可调，
@@ -454,6 +461,16 @@ func main() {
 
 	handler.RegisterRoutes(r)
 	adminHandler.RegisterExternalImageRoutes(r, handler)
+	imageWorkers, queueErr := admin.ImageJobWorkerCount()
+	if queueErr != nil {
+		log.Fatal(queueErr)
+	}
+	if err := adminHandler.StartImageJobQueue(backgroundCtx, imageWorkers); err != nil {
+		log.Fatalf("Initialize image queue: %v", err)
+	}
+	if err := adminHandler.StartImageMaintenance(backgroundCtx); err != nil {
+		log.Fatalf("Initialize image maintenance: %v", err)
+	}
 	adminHandler.StartPromptIntelligence(backgroundCtx)
 	adminHandler.RegisterRoutes(r)
 
@@ -621,7 +638,10 @@ func main() {
 	log.Printf("  API:    POST /v1/responses")
 	log.Printf("  API:    POST /v1/images/generations")
 	log.Printf("  API:    POST /v1/images/jobs")
+	log.Printf("  API:    POST /v1/images/jobs/results")
 	log.Printf("  API:    GET  /v1/images/jobs/:id")
+	log.Printf("  API:    GET  /v1/images/jobs/:id/output")
+	log.Printf("  API:    POST /v1/images/jobs/:id/ack")
 	log.Printf("  API:    POST /v1/messages")
 	log.Printf("  API:    GET  /v1/models")
 	log.Println("==========================================")

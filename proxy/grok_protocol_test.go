@@ -1332,3 +1332,75 @@ func TestMessagesAdapterFinalOutputPreservesBlockOrderAndBoundaries(t *testing.T
 		t.Fatalf("second tool arguments = %q, want []", got)
 	}
 }
+
+func TestGrokFastPublicModelRewritesToBuildFast(t *testing.T) {
+	now := time.Now()
+	account := &auth.Account{UpstreamType: auth.UpstreamGrok, RefreshToken: "rt", BaseURL: "https://cli.example/v1"}
+	account.SetGrokRoutingState(auth.GrokRoutingState{
+		Models: []auth.GrokModelRoute{{
+			ModelID:          "grok-4.7",
+			BaseURL:          "https://cli.example/v1",
+			APIBackend:       auth.GrokProtocolResponses,
+			ReasoningEfforts: []string{"low", "medium", "high", "xhigh"},
+		}},
+	})
+	if !relayAccountSupportsModel(account, auth.GrokFastPublicModelID) {
+		t.Fatal("synced catalog should still admit grok-4.7-fast")
+	}
+	if relayAccountSupportsModel(account, "grok-4.5") {
+		t.Fatal("catalog must still replace the other default models")
+	}
+	if !modelIDInList(auth.GrokFastPublicModelID, GrokVisibleModelIDsForAccount(account)) {
+		t.Fatal("visible model list missing grok-4.7-fast")
+	}
+	route := ResolveGrokUpstreamRoute(account, auth.GrokFastPublicModelID, GrokProtocolResponses, now)
+	if route.Model != auth.GrokFastUpstreamModelID || route.BaseURL != "https://cli.example/v1" || route.Protocol != GrokProtocolResponses {
+		t.Fatalf("route = %#v", route)
+	}
+	if len(route.ReasoningMenu) != 4 || route.ReasoningMenu[3] != "xhigh" {
+		t.Fatalf("reasoning menu = %#v", route.ReasoningMenu)
+	}
+	body, err := prepareRoutedGrokProtocolBody(route, GrokProtocolResponses, []byte(`{"model":"grok-4.7-fast","input":"hi","stream":true}`), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := gjson.GetBytes(body, "model").String(); got != auth.GrokFastUpstreamModelID {
+		t.Fatalf("upstream model = %q", got)
+	}
+	plain := ResolveGrokUpstreamRoute(account, "grok-4.7", GrokProtocolResponses, now)
+	if plain.Model != "grok-4.7" {
+		t.Fatalf("grok-4.7 wire model = %q", plain.Model)
+	}
+	// 跨协议转换会从 Responses 体重新带上公开名，收口后仍必须是上游名。
+	cross, err := prepareRoutedGrokProtocolBody(GrokUpstreamRoute{
+		Model: auth.GrokFastUpstreamModelID, Protocol: GrokProtocolChatCompletions,
+	}, GrokProtocolResponses, nil, []byte(`{"model":"grok-4.7-fast","input":"hi"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := gjson.GetBytes(cross, "model").String(); got != auth.GrokFastUpstreamModelID {
+		t.Fatalf("cross-protocol upstream model = %q", got)
+	}
+
+	narrowed := &auth.Account{UpstreamType: auth.UpstreamGrok, RefreshToken: "rt", Models: []string{"grok-4.7"}}
+	narrowed.SetGrokRoutingState(auth.GrokRoutingState{Models: []auth.GrokModelRoute{{ModelID: "grok-4.7", APIBackend: auth.GrokProtocolResponses}}})
+	if relayAccountSupportsModel(narrowed, auth.GrokFastPublicModelID) || modelIDInList(auth.GrokFastPublicModelID, GrokVisibleModelIDsForAccount(narrowed)) {
+		t.Fatal("model list without grok-4.7-fast must hide it")
+	}
+	if !modelIDInList("grok-4.7", GrokVisibleModelIDsForAccount(narrowed)) {
+		t.Fatal("model list should keep grok-4.7")
+	}
+	allowed := &auth.Account{UpstreamType: auth.UpstreamGrok, RefreshToken: "rt", Models: []string{auth.GrokFastPublicModelID}}
+	allowed.SetGrokRoutingState(auth.GrokRoutingState{Models: []auth.GrokModelRoute{{ModelID: "grok-4.7", APIBackend: auth.GrokProtocolResponses}}})
+	if !relayAccountSupportsModel(allowed, auth.GrokFastPublicModelID) || !modelIDInList(auth.GrokFastPublicModelID, GrokVisibleModelIDsForAccount(allowed)) {
+		t.Fatal("model list that names grok-4.7-fast should admit it")
+	}
+	if modelIDInList("grok-4.7", GrokVisibleModelIDsForAccount(allowed)) {
+		t.Fatal("model list that only names grok-4.7-fast must not inherit grok-4.7 from the catalog")
+	}
+	empty := &auth.Account{UpstreamType: auth.UpstreamGrok, RefreshToken: "rt"}
+	empty.SetGrokRoutingState(auth.GrokRoutingState{CatalogKnown: true})
+	if relayAccountSupportsModel(empty, auth.GrokFastPublicModelID) || modelIDInList(auth.GrokFastPublicModelID, GrokVisibleModelIDsForAccount(empty)) {
+		t.Fatal("authoritative empty catalog must not reopen grok-4.7-fast")
+	}
+}

@@ -77,7 +77,7 @@ func testGPTImage25UsagePersistence(t *testing.T, driver, dsn string) {
 	if got.ImageInputTokens != 800 || got.ImageOutputTokens != 100 || got.CachedImageInputTokens != 400 || !approxEqual(got.AccountBilled, 0.007625) || !approxEqual(got.TotalCost, 0.007625) {
 		t.Fatalf("persisted image usage = %+v", got)
 	}
-	self, _, _, _, err := db.listAPIKeySelfRecentLogs(ctx, 1, start, end, 1, 10)
+	self, _, _, _, err := db.listAPIKeySelfRecentLogs(ctx, 1, start, end, 1, 10, APIKeySelfLogFilter{}, -1)
 	if err != nil {
 		t.Fatal(err)
 	}

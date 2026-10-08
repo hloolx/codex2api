@@ -113,6 +113,12 @@ func GrokBillingSummaryFromFact(payload map[string]any, presence map[string]stri
 	summary.CurrentPeriodType = periodType
 	switch {
 	case strings.Contains(periodType, "weekly"):
+		// proto3 JSON omits zero-valued scalars: a weekly period without the key
+		// means 0% used, not unknown. Explicit null/invalid values stay unknown.
+		if _, exists := config["creditUsagePercent"]; !exists && usagePercent == nil && presence["creditUsagePercent"] != "invalid" {
+			zero := float64(0)
+			usagePercent = &zero
+		}
 		summary.WeeklyPercent = usagePercent
 		summary.WeeklyPeriodStart = periodStart
 		summary.WeeklyPeriodEnd = periodEnd
@@ -226,6 +232,10 @@ func FetchGrokBilling(ctx context.Context, account *auth.Account, proxyURL strin
 		if cfg.CreditUsagePercent != nil {
 			v := *cfg.CreditUsagePercent
 			summary.WeeklyPercent = &v
+		} else if cfg.CurrentPeriod != nil && strings.Contains(strings.ToLower(cfg.CurrentPeriod.Type), "weekly") {
+			// proto3 JSON omits a zero creditUsagePercent.
+			zero := float64(0)
+			summary.WeeklyPercent = &zero
 		}
 		if cfg.CurrentPeriod != nil {
 			summary.WeeklyPeriodStart = strings.TrimSpace(cfg.CurrentPeriod.Start)

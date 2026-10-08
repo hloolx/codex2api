@@ -22,12 +22,13 @@ import (
 	"github.com/tidwall/sjson"
 )
 
-// Grok CLI 请求头契约的默认值（与 Grok CLI 0.2.106 实抓流量对齐），可用环境变量覆盖，
-// 上游升级 CLI 版本导致指纹校验失败时无需改代码。
-// 0.2.106 契约：UA 为 "grok-pager/<v> grok-shell/<v> (<os>; <arch>)"，
-// identifier=grok-pager、mode=interactive，不再携带 client-surface / client-name 头。
+// Grok CLI 请求头契约的默认值（与 Grok CLI 1.0.46 交互模式实抓流量对齐），可用环境变量覆盖，
+// 上游升级 CLI 版本导致指纹校验失败时无需改代码。上游会对过旧版本直接回 426
+// （"Your Grok CLI version (...) is outdated"），届时先用 GROK_CLIENT_VERSION 顶上再升默认值。
+// 1.0.46 契约：UA 为 "grok-pager/<v> grok-shell/<v> (<os>; <arch>)"（arch 用 Rust 命名
+// aarch64 / x86_64），identifier=grok-pager、mode=interactive，不携带 client-surface / client-name 头。
 var (
-	grokClientVersion    = grokEnv("GROK_CLIENT_VERSION", "0.2.106")
+	grokClientVersion    = grokEnv("GROK_CLIENT_VERSION", "1.0.46")
 	grokClientIdentifier = grokEnv("GROK_CLIENT_IDENTIFIER", "grok-pager")
 	grokClientMode       = grokEnv("GROK_CLIENT_MODE", "interactive")
 	grokTokenAuth        = grokEnv("GROK_TOKEN_AUTH", "xai-grok-cli")
@@ -35,10 +36,17 @@ var (
 	// context window 500k × 80%；环境变量非空时作为逃生阀直接覆盖推导结果。
 	grokCompactionAtOverride = strings.TrimSpace(os.Getenv("GROK_COMPACTION_AT"))
 	grokCompactionAtDefault  = "400000"
-	// 官方 Grok CLI 1.0.4 实抓：doom-loop 窗口 1024、会话内剩余压缩次数 1。
+	// 官方 Grok CLI 1.0.46 实抓：doom-loop 窗口 1024、会话内剩余压缩次数 1。
 	grokDoomLoopCheck        = grokEnv("GROK_DOOM_LOOP_CHECK", "1024")
 	grokCompactionsRemaining = grokEnv("GROK_COMPACTIONS_REMAINING", "1")
+	// 官方 Grok CLI 1.0.46 实抓：逐字重复检测窗口 64。
+	grokExactRepetitionCheck = grokEnv("GROK_EXACT_REPETITION_CHECK", "64")
 )
+
+// grokRequestCompressionMinBytes 对齐 Grok CLI 1.0.46：大约 40KB 以下的
+// /v1/responses 发明文，更大的请求体带 Content-Encoding: zstd。
+// 实抓明文最大 42648 字节，压缩体对应的 JSON 最小 79497 字节，64KiB 落在两者之间。
+const grokRequestCompressionMinBytes = 64 << 10
 
 func grokEnv(key, fallback string) string {
 	if value := strings.TrimSpace(os.Getenv(key)); value != "" {
@@ -55,15 +63,80 @@ const grokCompactionThresholdPercent = 80
 // grokCompactionAtForAccount 决定发给上游的 x-compaction-at。
 // 优先级：环境变量显式覆盖 > 按账号观测到的上下文窗口推导 > 默认值。
 // 观测值来自上游响应头，因此首个请求必然走默认值；观测到的窗口与默认假设一致时
-// 推导结果也与默认值相同，即行为不变、仅在上游改窗口后自动跟上。
+// 推导结果也与默认值相同。
+//
+// 推导结果低于默认 400000 时保持默认值。cli-chat-proxy 对 grok-4.7-build-fast
+// 固定返回 x-grok-context-window: 256000，官方 CLI 1.0.46 仍发 400000，
+// 而且超过 256k input token 的请求可以完成。按 256000 的 80% 发 204800 会让
+// 客户端提前压缩，打断已经命中的前缀缓存。观测窗口大于默认假设时仍按 80% 跟上。
 func grokCompactionAtForAccount(account *auth.Account) string {
 	if grokCompactionAtOverride != "" {
 		return grokCompactionAtOverride
 	}
 	if window := account.GetGrokContextWindow(); window > 0 {
-		return strconv.FormatInt(window*grokCompactionThresholdPercent/100, 10)
+		derived := window * grokCompactionThresholdPercent / 100
+		floor, err := strconv.ParseInt(grokCompactionAtDefault, 10, 64)
+		if err != nil || derived < floor {
+			return grokCompactionAtDefault
+		}
+		return strconv.FormatInt(derived, 10)
 	}
 	return grokCompactionAtDefault
+}
+
+// grokRequestCompressionEnabled 报告这次 Grok 上游请求是否压缩 body。
+//
+// GROK_REQUEST_COMPRESSION 是部署级逃生阀，优先于默认策略。未设置时只压缩
+// OAuth / cli-chat-proxy 账号：/v1/settings 的 accept_request_encodings 是 ["zstd"]。
+// API Key 走 xAI 公开 API，没有这份实抓，默认保持明文。
+func grokRequestCompressionEnabled(account *auth.Account) bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("GROK_REQUEST_COMPRESSION"))) {
+	case "zstd", "on", "true", "1":
+		return true
+	case "off", "none", "false", "0", "plain":
+		return false
+	}
+	return account != nil && account.GrokAuthKind() != auth.GrokAuthKindAPIKey
+}
+
+// compressGrokRequestBody 按官方 CLI 的阈值压缩 Grok /v1/responses 请求体。
+//
+// 返回 (出站字节, Content-Encoding)。第二个返回值为空串表示发明文。
+// 压缩失败或压完没有变小都退回明文。编码器与 Codex 路径共用，EncodeAll 可并发调用。
+func compressGrokRequestBody(account *auth.Account, body []byte) ([]byte, string) {
+	if len(body) < grokRequestCompressionMinBytes || !grokRequestCompressionEnabled(account) {
+		return body, ""
+	}
+	encoder := codexRequestZstdEncoder()
+	if encoder == nil {
+		return body, ""
+	}
+	compressed := encoder.EncodeAll(body, nil)
+	if len(compressed) == 0 || len(compressed) >= len(body) {
+		return body, ""
+	}
+	return compressed, "zstd"
+}
+
+// ensureGrokPromptCacheKey 让 /v1/responses 带上稳定的 prompt_cache_key。
+//
+// 官方 CLI 1.0.46 的主会话把这个字段设成 x-grok-session-id，165/166 次请求都带，
+// 前缀缓存命中约 92.8%。下游已经给出的 key 原样保留：memory / turn-summary
+// 这类旁路调用用另一套 key，避免挤掉主会话前缀。缺省时补上与会话头相同的稳定值，
+// 不使用每请求随机 UUID。
+func ensureGrokPromptCacheKey(body []byte, headers http.Header, conversationBody []byte) []byte {
+	if strings.TrimSpace(gjson.GetBytes(body, "prompt_cache_key").String()) != "" {
+		return body
+	}
+	key := resolveGrokConversationID(headers, conversationBody)
+	if key == "" {
+		return body
+	}
+	updated, err := sjson.SetBytes(body, "prompt_cache_key", key)
+	if err != nil {
+		return body
+	}
+	return updated
 }
 
 // grokUserAgentOS 返回 UA 里的平台名。官方 CLI 用 "macos" 而非 Go 的 "darwin"。
@@ -74,22 +147,38 @@ func grokUserAgentOS() string {
 	return runtime.GOOS
 }
 
-func grokUserAgent() string {
-	if grokClientIdentifier == "grok-shell" {
-		return fmt.Sprintf("grok-shell/%s (%s; %s)", grokClientVersion, grokUserAgentOS(), runtime.GOARCH)
+// grokUserAgentArch 返回 UA 里的架构名。官方 CLI 是 Rust 构建，用 aarch64 / x86_64
+// 而非 Go 的 arm64 / amd64。
+func grokUserAgentArch() string {
+	switch runtime.GOARCH {
+	case "arm64":
+		return "aarch64"
+	case "amd64":
+		return "x86_64"
 	}
-	return fmt.Sprintf("%s/%s grok-shell/%s (%s; %s)", grokClientIdentifier, grokClientVersion, grokClientVersion, grokUserAgentOS(), runtime.GOARCH)
+	return runtime.GOARCH
 }
 
-// grokAgentID 为每个账号生成稳定的 agent 标识（32 位 hex，与 Grok CLI 的
+func grokUserAgent() string {
+	if grokClientIdentifier == "grok-shell" {
+		return fmt.Sprintf("grok-shell/%s (%s; %s)", grokClientVersion, grokUserAgentOS(), grokUserAgentArch())
+	}
+	return fmt.Sprintf("%s/%s grok-shell/%s (%s; %s)", grokClientIdentifier, grokClientVersion, grokClientVersion, grokUserAgentOS(), grokUserAgentArch())
+}
+
+// grokAgentID 为每个账号生成稳定的 agent 标识（UUIDv5，与 Grok CLI 的
 // global agent id 形态一致）。
 func grokAgentID(account *auth.Account) string {
-	sum := sha256.Sum256(fmt.Appendf(nil, "codex2api:grok-agent:%d", account.ID()))
-	return hex.EncodeToString(sum[:16])
+	return uuid.NewSHA1(uuid.NameSpaceOID, fmt.Appendf(nil, "codex2api:grok-agent:%d", account.ID())).String()
 }
 
 func grokRandomHexID() string {
 	return strings.ReplaceAll(uuid.New().String(), "-", "")
+}
+
+// grokTraceparent 生成每请求独立的 W3C traceparent（官方 CLI 每次推理请求都带）。
+func grokTraceparent() string {
+	return "00-" + grokRandomHexID() + "-" + grokRandomHexID()[:16] + "-01"
 }
 
 // resolveGrokConversationID 给官方 Grok CLI 的 session/conv 头一个跨轮稳定值。
@@ -116,6 +205,15 @@ func resolveGrokConversationID(headers http.Header, body []byte) string {
 		return uuid.NewSHA1(uuid.NameSpaceOID, []byte("codex2api:grok-conv:"+key)).String()
 	}
 	return uuid.New().String()
+}
+
+// grokConversationGroupNamespace 对应 xai-grok-shell 的 CONVERSATION_GROUP_NAMESPACE。
+const grokConversationGroupNamespace = "xai:grok-build:conversation-group:"
+
+// grokConversationGroupID 复现 grok-build derive_conversation_group_id：
+// UUIDv5(NAMESPACE_OID, "xai:grok-build:conversation-group:" + root_session_id)。
+func grokConversationGroupID(rootSessionID string) string {
+	return uuid.NewSHA1(uuid.NameSpaceOID, []byte(grokConversationGroupNamespace+rootSessionID)).String()
 }
 
 func grokDownstreamAPIKey(headers http.Header) string {
@@ -165,6 +263,7 @@ func applyGrokRequestHeaders(req *http.Request, account *auth.Account, bearer st
 	req.Header.Set("x-grok-client-identifier", grokClientIdentifier)
 	req.Header.Set("x-grok-client-mode", grokClientMode)
 	req.Header.Set("x-grok-doom-loop-check", grokDoomLoopCheck)
+	req.Header.Set("x-grok-exact-repetition-check", grokExactRepetitionCheck)
 	req.Header.Set("x-compactions-remaining", grokCompactionsRemaining)
 	if compactionAt := grokCompactionAtForAccount(account); compactionAt != "" {
 		req.Header.Set("x-compaction-at", compactionAt)
@@ -178,7 +277,11 @@ func applyGrokRequestHeaders(req *http.Request, account *auth.Account, bearer st
 	sessionID := resolveGrokConversationID(downstreamHeaders, inboundBody)
 	req.Header.Set("x-grok-session-id", sessionID)
 	req.Header.Set("x-grok-conv-id", sessionID)
-	req.Header.Set("x-grok-req-id", grokRandomHexID())
+	// grok-build 用根会话派生 conv-group，把主对话和子代理归到同一组。
+	// 只在已经发出 conv-id 时附带；算法与 xai-grok-shell derive_conversation_group_id 一致。
+	req.Header.Set("x-grok-conv-group-id", grokConversationGroupID(sessionID))
+	req.Header.Set("x-grok-req-id", uuid.NewString())
+	req.Header.Set("traceparent", grokTraceparent())
 
 	if userID := account.GrokUserID(); userID != "" && !isAPIKey {
 		req.Header.Set("x-userid", userID)
@@ -218,8 +321,14 @@ func ExecuteGrokRequest(ctx context.Context, account *auth.Account, requestBody 
 	// 投递前一次性归一化：namespace 分组工具展平成子 function 并记录别名（响应流里再
 	// 反解回 {name, namespace}）、web_search 降级为最小形态、历史项按 Grok 原生契约重建、
 	// Codex 专属字段剥离、思考强度钳制，顺带算出轮次序号与模型名。
+	// 连通性测试走这条旧入口，对外名 grok-4.7-fast 必须先换成 grok-4.7-build-fast。
 	conversationBody := requestBody
-	preflight := prepareGrokUpstreamBody(requestBody)
+	if wire := auth.GrokWireModelID(gjson.GetBytes(requestBody, "model").String()); wire != "" {
+		if updated, err := rewriteGrokProtocolModel(requestBody, wire); err == nil {
+			requestBody = updated
+		}
+	}
+	preflight := prepareGrokUpstreamBodyWithCompaction(requestBody, nil, account.GrokReasoningMenu(gjson.GetBytes(requestBody, "model").String()))
 	requestBody = preflight.Body
 	nsAliases := preflight.Aliases
 	logGrokPrefixFingerprint(requestBody, preflight.TurnIndex, preflight.Model)
@@ -229,11 +338,16 @@ func ExecuteGrokRequest(ctx context.Context, account *auth.Account, requestBody 
 	model := preflight.Model
 
 	send := func(body []byte) (*http.Response, error) {
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+		body = ensureGrokPromptCacheKey(body, headers, conversationBody)
+		outbound, encoding := compressGrokRequestBody(account, body)
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(outbound))
 		if err != nil {
 			return nil, ErrInternalError("创建请求失败", err)
 		}
 		applyGrokRequestHeaders(req, account, bearer, headers, conversationBody)
+		if encoding != "" {
+			req.Header.Set("Content-Encoding", encoding)
+		}
 		// 与官方 CLI 对齐的指纹头：会话内轮次序号 + 完整 Accept-Encoding。
 		req.Header.Set("x-grok-turn-idx", strconv.Itoa(turnIdx))
 		req.Header.Set("Accept-Encoding", "gzip, br, deflate")
@@ -359,11 +473,12 @@ func recordGrokRateLimitHeaders(account *auth.Account, header http.Header) {
 }
 
 // sanitizeGrokRequestBody 剥离 Codex 管道注入的、Grok 上游不接受的字段。
+// prompt_cache_key 要留下：cli-chat-proxy 接受它，并用它做前缀缓存路由。
 func sanitizeGrokRequestBody(body []byte) []byte {
 	if !gjson.ValidBytes(body) {
 		return body
 	}
-	for _, path := range []string{"client_metadata", "prompt_cache_key", "service_tier", "safety_identifier"} {
+	for _, path := range []string{"client_metadata", "service_tier", "safety_identifier"} {
 		if gjson.GetBytes(body, path).Exists() {
 			if updated, err := sjson.DeleteBytes(body, path); err == nil {
 				body = updated
@@ -397,11 +512,31 @@ func dropGrokToolChoiceWithoutTools(body []byte) []byte {
 }
 
 // mapGrokReasoningEffort 把思考强度映射到当前 Grok 模型支持的档位。
-// grok-4.6 起（含 grok-4.20-multi-agent）支持 xhigh；更旧的 build 只有 low/medium/high。
-// Codex 的 max 在支持 xhigh 的模型上落到 xhigh，否则落到 high；minimal 一律落到 low。
-// 无模型上下文时按旧 build 处理，避免 grok-4.5 / grok-3 收到不认的档位。
-func mapGrokReasoningEffort(effort, model string) (string, bool) {
-	switch strings.ToLower(strings.TrimSpace(effort)) {
+// menu 非空时以该账号 /v1/models 菜单为准：菜单里有的档原样转发，
+// 没有的按 minimal→low、max→xhigh→high 折叠。
+// menu 为空时退回版本启发式：grok-4.6 起（grok-4.7 与 grok-4.20-multi-agent 同样）
+// 支持 xhigh；更旧的 build 只有 low/medium/high。Codex 的 max 在支持 xhigh 的模型上
+// 落到 xhigh，否则落到 high；minimal 一律落到 low。无模型上下文时按旧 build 处理。
+func mapGrokReasoningEffort(effort, model string, menu []string) (string, bool) {
+	requested := strings.ToLower(strings.TrimSpace(effort))
+	if len(menu) > 0 {
+		var folded string
+		switch requested {
+		case "minimal":
+			folded = foldGrokCatalogReasoningEffort(menu, "minimal", "low")
+		case "xhigh":
+			folded = foldGrokCatalogReasoningEffort(menu, "xhigh", "high")
+		case "max":
+			folded = foldGrokCatalogReasoningEffort(menu, "max", "xhigh", "high")
+		default:
+			return effort, false
+		}
+		if strings.TrimSpace(effort) == folded {
+			return effort, false
+		}
+		return folded, true
+	}
+	switch requested {
 	case "xhigh":
 		if grokSupportsXHighReasoningEffort(model) {
 			return effort, false
@@ -419,8 +554,21 @@ func mapGrokReasoningEffort(effort, model string) (string, bool) {
 	}
 }
 
+// foldGrokCatalogReasoningEffort 返回菜单里第一个存在的候选档。
+// 候选从请求档排到已验证的安全档，一个都没有时用最后一个。
+func foldGrokCatalogReasoningEffort(menu []string, candidates ...string) string {
+	for _, candidate := range candidates {
+		for _, offered := range menu {
+			if strings.EqualFold(strings.TrimSpace(offered), candidate) {
+				return candidate
+			}
+		}
+	}
+	return candidates[len(candidates)-1]
+}
+
 // grokSupportsXHighReasoningEffort 判断模型是否接受 reasoning.effort=xhigh。
-// xAI 文档：grok-4.6 支持；grok-4.5 等不支持的模型会把 xhigh 当成 high。
+// xAI 文档：grok-4.6 / grok-4.7 支持；grok-4.5 等不支持的模型会把 xhigh 当成 high。
 // 版本线按 grok-4.6 起放行（grok-4.6-beta / grok-4.6-build / grok-4.20-multi-agent 同样识别）。
 func grokSupportsXHighReasoningEffort(model string) bool {
 	model = strings.ToLower(strings.TrimSpace(model))
@@ -451,14 +599,19 @@ func grokSupportsXHighReasoningEffort(model string) bool {
 
 // clampGrokReasoningEffort 规范化发给 Grok 上游的思考强度：同时覆盖 Responses
 // （reasoning.effort）与 Chat（reasoning_effort）两种形态，避免旧 Grok 不认的档位报错。
+// 没有目录菜单时使用版本启发式。
 func clampGrokReasoningEffort(body []byte) []byte {
+	return clampGrokReasoningEffortWithMenu(body, nil)
+}
+
+func clampGrokReasoningEffortWithMenu(body []byte, menu []string) []byte {
 	model := gjson.GetBytes(body, "model").String()
 	for _, path := range []string{"reasoning.effort", "reasoning_effort"} {
 		v := gjson.GetBytes(body, path)
 		if !v.Exists() {
 			continue
 		}
-		mapped, changed := mapGrokReasoningEffort(v.String(), model)
+		mapped, changed := mapGrokReasoningEffort(v.String(), model, menu)
 		if !changed {
 			continue
 		}
@@ -632,8 +785,10 @@ func applyGrokCooldown(store *auth.Store, account *auth.Account, statusCode int,
 		}
 		resetAt := time.Now().Add(24 * time.Hour)
 		// free 账号只有免费额度这一种资源，模型级隔离没有意义且不影响账号状态展示，
-		// 直接整号冷却让列表显示"限流"。付费账号保留模型级隔离（其它模型仍可用）。
-		if strings.EqualFold(strings.TrimSpace(account.GetPlanType()), "free") || cooldownModel == "" {
+		// 直接整号冷却让列表显示"限流"。只有已知付费套餐才保留模型级隔离（其它模型仍可用）；
+		// 套餐未知（AT 不带 tier、导入包无 plan_type、控制面也没观测到）时，错误体本身
+		// 就是在耗免费额度的证据，按 free 处理。
+		if grokFreeQuotaCoolsWholeAccount(account) || cooldownModel == "" {
 			store.MarkCooldown(account, 24*time.Hour, "usage_limited")
 			log.Printf("Grok 账号 %d 免费额度耗尽 (model=%s)，账号冷却 24h", account.ID(), cooldownModel)
 			return codex429Decision{Reason: "usage_limited", ResetAt: resetAt, Cooldown: 24 * time.Hour}
@@ -690,6 +845,12 @@ func applyGrokCooldown(store *auth.Store, account *auth.Account, statusCode int,
 		return codex429Decision{Reason: "version_required", Cooldown: time.Minute}
 	}
 	return codex429Decision{}
+}
+
+// grokFreeQuotaCoolsWholeAccount 判断免费额度耗尽是否整号冷却：free 或套餐未知为真。
+func grokFreeQuotaCoolsWholeAccount(account *auth.Account) bool {
+	plan := account.GrokPlanHint(time.Now())
+	return plan == "" || plan == "free"
 }
 
 // parseRetryAfterHeader 解析 Retry-After 头（秒数或 HTTP 日期）。

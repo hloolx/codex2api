@@ -381,6 +381,7 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 	cacheRequestUltraMode(c, resolveRequestUltraMode(nil, rawBody))
 
 	supportedModels := h.supportedModelIDs(c.Request.Context())
+	rememberDaybreakRequest(c, rawBody)
 	rawBody, requestModel, mappedModel, mappingApplied := h.applyConfiguredModelMappingToBody(rawBody, supportedModels)
 	rawBody, _ = normalizePortableResponsesCompactionHistory(rawBody)
 	c.Set("raw_body", rawBody)
@@ -473,6 +474,9 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 			errCode = api.ErrCodeInvalidRequest
 			closeCode = websocket.ClosePolicyViolation
 		}
+		if status == http.StatusBadRequest {
+			errType, errCode, closeCode = api.ErrorTypeInvalidRequest, api.ErrCodeInvalidParameter, websocket.ClosePolicyViolation
+		}
 		apiErr = api.NewAPIError(errCode, msg, errType)
 		_ = writeResponsesWSError(conn, apiErr)
 		return newResponsesWSCloseError(closeCode, apiErr.Message, apiErr)
@@ -505,7 +509,8 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 		defer releaseAPIKeyConcurrency()
 	}
 
-	accountFilter := accountFilterForModel(effectiveModel)
+	accountFilter := accountFilterForResponsesWebSocket(effectiveModel)
+	accountFilter = h.withModelCooldownFilter(c.Request.Context(), effectiveModel, accountFilter)
 	accountFilter = h.withCodexRouteFilter(c, logModel, effectiveModel, codexBody, accountFilter)
 	accountFilter = applyAffinityGroupRouting(c, sessionIdentity, accountFilter)
 	accountFilter = h.applyScopeBudgetFilter(c, accountFilter)
@@ -651,8 +656,8 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 					d.recordSelectionError(routeErr)
 				}
 				apiErr = api.NewAPIError(api.ErrorCode(routeErr.Code), routeErr.Message, routeAPIErrorType(routeErr))
-			} else if errors.Is(selectionErr, auth.ErrSchedulerQueueFull) {
-				apiErr = schedulerQueueFullAPIError()
+			} else if selectionAPIError := schedulerSelectionAPIError(selectionErr); selectionAPIError != nil {
+				apiErr = selectionAPIError
 			} else if lastRetryableUpstreamErr != nil {
 				apiErr = responsesWSClientUpstreamAPIError(lastRetryableUpstreamErr, hideUpstreamErrors)
 			} else if lastStatusCode == http.StatusTooManyRequests && len(lastBody) > 0 {
@@ -665,6 +670,8 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 				apiErr = api.NewAPIError(api.ErrCodeRateLimitReached, usageLimitedPoolMessages(limited).Chinese, api.ErrorTypeRateLimit)
 			} else if compactionAffinity.Known {
 				apiErr = compactionUpstreamUnavailableAPIError()
+			} else if h.accountPoolConcurrencySaturated(apiKeyID, retryExclusions.ForSelection(), accountFilter, dispatchPolicy) {
+				apiErr = api.NewAPIError(api.ErrorCode(ErrorCodeAccountPoolConcurrencySaturated), concurrencySaturatedMessageZH, api.ErrorTypeServer)
 			} else {
 				apiErr = api.NewAPIError(api.ErrCodeServiceUnavailable, noAvailableAccountMessage(effectiveModel), api.ErrorTypeServer)
 			}
@@ -714,11 +721,16 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 			useWebsocket = false
 		}
 		// 体积达到已学习的 1009 阈值时直接首发 HTTP,跳过 WS 必败等待(issue #404)。
-		if useWebsocket && globalWSSizeRouter.PreferHTTP(len(codexBody)) {
+		// 中转账号自己的 Responses WebSocket 不套用这条 Codex 体积学习。
+		relayUpstreamWS := account.OpenAIResponsesUsesUpstreamWebsocket() && !responsesBodyRequestsImageGeneration(rawBody) && !naturalImageIntent
+		if useWebsocket && globalWSSizeRouter.PreferHTTP(len(codexBody)) && !relayUpstreamWS {
 			useWebsocket = false
 			if attempt == 0 {
 				log.Printf("[WS] 请求体 %dKB 达到已学习的 1009 体积阈值，直接走 HTTP 上游 (endpoint=/v1/responses, ingress=ws)", len(codexBody)/1024)
 			}
+		}
+		if relayUpstreamWS {
+			useWebsocket = true
 		}
 		// WebSocket 上游下剥离自动注入的图片工具，防止模型自主生图卡死。
 		upstreamBody := codexBody
@@ -759,8 +771,13 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 		// Responses/ChatCompletions 路径一致——无显式会话默认每请求隔离上游身份，
 		// WS 路径交给 ExecuteRequest 的 stateless 槽位池处理。
 		upstreamCtx = context.WithValue(upstreamCtx, encryptedContentSessionKey{}, sessionIdentity.affinityID)
+		upstreamCtx = WithCodexTurnStateAffinityKey(upstreamCtx, affinityKey)
+		guardCodexTurnStateEcho(affinityKey, account, downstreamHeaders)
 		upstreamSessionID := resolveUpstreamSessionID(apiKeyID, sessionIdentity.upstreamSeed, sessionIdentity.explicitUpstreamID, useWebsocket)
 		resp, reqErr := executeHTTPWithContinuousRetryKeepalive(upstreamCtx, func() (*http.Response, error) {
+			if account.OpenAIResponsesUsesUpstreamWebsocket() {
+				return ExecuteOpenAIResponsesRequest(upstreamCtx, account, upstreamBody, proxyURL, downstreamHeaders)
+			}
 			return ExecuteRequest(upstreamCtx, account, upstreamBody, upstreamSessionID, proxyURL, apiKey, deviceCfg, downstreamHeaders, useWebsocket)
 		})
 		durationMs := int(time.Since(start).Milliseconds())
@@ -790,7 +807,7 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 			if wsHTTPFallback.ForceHTTP() && !useWebsocket {
 				wsHTTPFallback.LogHTTPAttemptCompletion("/v1/responses", account.ID(), attempt+1, durationMs, 0, logStatusUpstreamStreamBreak)
 			}
-			if useWebsocket && kind == upstreamErrorKindMessageTooBig {
+			if useWebsocket && kind == upstreamErrorKindMessageTooBig && !account.OpenAIResponsesUsesUpstreamWebsocket() {
 				wsElapsed := time.Since(start)
 				globalWSSizeRouter.RecordMessageTooBig(len(codexBody))
 				wsHTTPFallback.Retain(account, proxyURL, wsElapsed, websocketMessageTooBigSource(reqErr.Error()))
@@ -1011,7 +1028,7 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 			var retryErr *responsesWSRetryableStreamError
 			if errors.As(err, &retryErr) {
 				lastRetryableUpstreamErr = api.NewAPIError(api.ErrCodeUpstreamError, retryErr.outcome.failureMessage, api.ErrorTypeUpstream)
-				if useWebsocket && isWebsocketMessageTooBigOutcome(retryErr.outcome) {
+				if useWebsocket && isWebsocketMessageTooBigOutcome(retryErr.outcome) && !account.OpenAIResponsesUsesUpstreamWebsocket() {
 					wsElapsed := time.Since(start)
 					globalWSSizeRouter.RecordMessageTooBig(len(codexBody))
 					wsHTTPFallback.Retain(account, proxyURL, wsElapsed, websocketMessageTooBigSource(retryErr.outcome.failureMessage))
@@ -1123,6 +1140,7 @@ func (h *Handler) streamResponsesWSUpstream(
 	options *responsesWSForwardOptions,
 	continuousRetryPolicy database.ContinuousRetryPolicy,
 ) error {
+	upstreamEndpoint := "/v1/responses"
 	account.Mu().RLock()
 	c.Set("x-account-email", account.Email)
 	account.Mu().RUnlock()
@@ -1153,6 +1171,7 @@ func (h *Handler) streamResponsesWSUpstream(
 	var terminalFailureClientPayload []byte
 	var preContentErrorCandidate []byte
 	var completedResponsePayload []byte
+	responseModelObserver := &upstreamResponseModelObserver{}
 	outputCollector := newResponseOutputCollector()
 	emptyIncomplete := &emptyIncompleteTracker{}
 	terminalFailureEventType := ""
@@ -1233,6 +1252,7 @@ func (h *Handler) streamResponsesWSUpstream(
 		if image, ok := extractImageFromOutputItemDone(data, model); ok {
 			imageLogInfo = mergeImageUsageLogInfo(imageLogInfo, imageUsageLogInfoFromImage(image))
 		}
+		observeUpstreamResponseModelFrame(responseModelObserver, parsed, eventType)
 		if isResponsesSuccessTerminalEvent(eventType) {
 			usage = extractUsageFromResult(parsed.Get("response.usage"))
 			if tier := parsed.Get("response.service_tier").String(); tier != "" {
@@ -1433,7 +1453,7 @@ func (h *Handler) streamResponsesWSUpstream(
 		_ = writeResponsesWSError(conn, newAPIPolicyDecisionAPIError(metadata))
 		return nil
 	}
-	if shouldFallbackWebsocketMessageTooBigToHTTP(outcome, viaWebsocket, downstreamWroteBeforeCommit, c.Request.Context().Err(), writeErr) {
+	if shouldFallbackWebsocketMessageTooBigToHTTP(outcome, viaWebsocket, downstreamWroteBeforeCommit, c.Request.Context().Err(), writeErr) && !account.OpenAIResponsesUsesUpstreamWebsocket() {
 		_ = wsReplay.Close()
 		resp.Body.Close()
 		return &responsesWSRetryableStreamError{outcome: outcome, eventType: terminalFailureEventType}
@@ -1444,7 +1464,7 @@ func (h *Handler) streamResponsesWSUpstream(
 		h.logPromptPolicyRetryUsage(c, database.UsageLogInput{
 			AccountID: account.ID(), Endpoint: "/v1/responses", Model: model, EffectiveModel: logEffectiveModel,
 			StatusCode: outcome.logStatusCode, DurationMs: totalDuration, FirstTokenMs: firstTokenMs, ReasoningEffort: effectiveReasoningEffortForAccount(account, reasoningEffort, c.Request.Context()),
-			InboundEndpoint: "/v1/responses", UpstreamEndpoint: "/v1/responses", Stream: true, ViaWebsocket: viaWebsocket,
+			InboundEndpoint: "/v1/responses", UpstreamEndpoint: upstreamEndpoint, Stream: true, ViaWebsocket: viaWebsocket,
 			AttemptIndex: fallbackAttempt, UpstreamErrorKind: outcome.failureKind,
 			ErrorMessage: usageLogFailureMessage(outcome.logStatusCode, outcome.failureMessage),
 		}, promptPolicyIncidentID)
@@ -1531,7 +1551,7 @@ func (h *Handler) streamResponsesWSUpstream(
 		FirstTokenMs:           firstTokenMs,
 		ReasoningEffort:        effectiveReasoningEffortForAccount(account, reasoningEffort, c.Request.Context()),
 		InboundEndpoint:        "/v1/responses",
-		UpstreamEndpoint:       "/v1/responses",
+		UpstreamEndpoint:       upstreamEndpoint,
 		Stream:                 true,
 		ViaWebsocket:           viaWebsocket,
 		ServiceTier:            usageTiers.ServiceTier,
@@ -1556,6 +1576,8 @@ func (h *Handler) streamResponsesWSUpstream(
 		logInput.ImageInputTokens, logInput.ImageOutputTokens, logInput.CachedImageInputTokens = usage.ImageInputTokens, usage.ImageOutputTokens, usage.CachedImageInputTokens
 	}
 	applyImageUsageLogInfo(logInput, imageLogInfo)
+	// WS 轮终态记账：attempt 实发模型优先（effectiveModel），兜底客户端请求模型。
+	applyUpstreamResponseModelObservation(logInput, responseModelObserver, upstreamSentModelForAudit(effectiveModel, model), account.ID())
 	h.logUsageForRequest(c, logInput)
 
 	resp.Body.Close()

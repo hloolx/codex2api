@@ -119,3 +119,38 @@ var _ Backend = (*LocalBackend)(nil)
 
 // helper：方便 Save 之外的位置构造 reader/buffer。
 var _ = bytes.NewReader
+
+// SaveReader copies an already encoded image without loading it into memory.
+func (b *LocalBackend) SaveReader(ctx context.Context, key string, source io.ReadSeeker, size int64, mime string) (string, error) {
+	if b.dir == "" || key == "" || filepath.Base(key) != key || key == "." || key == ".." || strings.ContainsAny(key, `/\`) {
+		return "", fmt.Errorf("invalid local image key")
+	}
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	f, err := os.CreateTemp(b.dir, ".image-write-")
+	if err != nil {
+		return "", err
+	}
+	name := f.Name()
+	defer os.Remove(name)
+	n, err := io.Copy(f, source)
+	closeErr := f.Close()
+	if err != nil {
+		return "", err
+	}
+	if closeErr != nil {
+		return "", closeErr
+	}
+	if size >= 0 && n != size {
+		return "", io.ErrUnexpectedEOF
+	}
+	if err = ctx.Err(); err != nil {
+		return "", err
+	}
+	full := filepath.Join(b.dir, key)
+	if err = os.Rename(name, full); err != nil {
+		return "", err
+	}
+	return filepath.Abs(full)
+}

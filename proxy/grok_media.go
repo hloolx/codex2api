@@ -172,7 +172,7 @@ func grokMediaPreferredAccountFilter(model string) auth.AccountFilter {
 		if account.GrokAuthKind() == auth.GrokAuthKindAPIKey {
 			return true
 		}
-		plan := strings.ToLower(strings.TrimSpace(account.GetPlanType()))
+		plan := account.GrokPlanHint(time.Now())
 		return plan != "" && plan != "free"
 	}
 }
@@ -180,12 +180,24 @@ func grokMediaPreferredAccountFilter(model string) auth.AccountFilter {
 // nextGrokMediaAccount 两层选号:先付费凭据,挑不到再放开到全部候选
 // (与生图路径的 plus 优先层级同构)。两层都过 scope 预算闸门。
 func (h *Handler) nextGrokMediaAccount(c *gin.Context, apiKeyID int64, exclude map[int64]bool, model string, identity requestSessionIdentity) (*auth.Account, string) {
-	preferred := applyAffinityGroupRouting(c, identity, h.withModelCooldownFilter(model, grokMediaPreferredAccountFilter(model)))
+	ctx := context.Background()
+	if c != nil && c.Request != nil {
+		ctx = c.Request.Context()
+	}
+	preferred := applyAffinityGroupRouting(c, identity, h.withModelCooldownFilter(ctx, model, grokMediaPreferredAccountFilter(model)))
 	if account, stickyProxyURL := h.nextAccountForSessionWithFilter("", apiKeyID, exclude, h.applyScopeBudgetFilter(c, preferred)); account != nil {
 		return account, stickyProxyURL
 	}
-	fallback := applyAffinityGroupRouting(c, identity, h.withModelCooldownFilter(model, grokMediaAccountFilter(model)))
-	return h.nextAccountForSessionWithFilter("", apiKeyID, exclude, h.applyScopeBudgetFilter(c, fallback))
+	return h.nextAccountForSessionWithFilter("", apiKeyID, exclude, h.grokMediaDispatchFilter(c, model, identity))
+}
+
+func (h *Handler) grokMediaDispatchFilter(c *gin.Context, model string, identity requestSessionIdentity) auth.AccountFilter {
+	ctx := context.Background()
+	if c != nil && c.Request != nil {
+		ctx = c.Request.Context()
+	}
+	fallback := applyAffinityGroupRouting(c, identity, h.withModelCooldownFilter(ctx, model, grokMediaAccountFilter(model)))
+	return h.applyScopeBudgetFilter(c, fallback)
 }
 
 // ==================== 上游 profile 与请求投递 ====================
@@ -303,7 +315,7 @@ func stripGrokCLIIdentityHeaders(header http.Header) {
 	for _, key := range []string{
 		"x-grok-client-version", "x-grok-client-identifier", "x-grok-client-mode",
 		"x-xai-token-auth", "x-authenticateresponse", "x-compaction-at",
-		"x-grok-agent-id", "x-grok-session-id", "x-grok-conv-id", "x-grok-req-id",
+		"x-grok-agent-id", "x-grok-session-id", "x-grok-conv-id", "x-grok-conv-group-id", "x-grok-req-id",
 		"x-grok-turn-idx", "x-grok-model-override", "x-userid", "x-grok-user-id",
 		"x-grok-doom-loop-check", "x-compactions-remaining",
 	} {
@@ -570,6 +582,11 @@ func (h *Handler) forwardGrokImagesRequest(c *gin.Context, inboundEndpoint, imag
 				SendAPIKeyLimitError(c, http.StatusTooManyRequests, msg)
 				return
 			}
+			if h.accountPoolConcurrencySaturated(apiKeyID, retryExclusions.ForSelection(), h.grokMediaDispatchFilter(c, imageModel, identity), auth.DispatchPolicyStandard) {
+				setConcurrencySaturatedRetryAfter(c)
+				c.JSON(http.StatusServiceUnavailable, concurrencySaturatedError())
+				return
+			}
 			c.JSON(http.StatusServiceUnavailable, noAvailableAccountError(""))
 			return
 		}
@@ -710,9 +727,9 @@ func (h *Handler) forwardGrokImagesRequest(c *gin.Context, inboundEndpoint, imag
 			StatusCode: http.StatusOK, DurationMs: int(time.Since(start).Milliseconds()),
 			InboundEndpoint: inboundEndpoint, UpstreamEndpoint: inboundEndpoint, Stream: false,
 		}
-		logInput.CompletionTokens = imageCount
-		logInput.OutputTokens = imageCount
-		logInput.TotalTokens = imageCount
+		// 媒体按张计费(image_count),不再把张数塞进输出 token 冒充用量;
+		// 上游自报的成本(usage.cost_in_usd_ticks)优先作为账号成本。
+		logInput.UpstreamCostUSD = grokUpstreamCostUSD(out)
 		applyImageUsageLogInfo(logInput, grokImagesUsageLogInfo(out))
 		if !claimContinuousRetrySuccess(c, continuousRetryProtocolOpenAI) {
 			h.store.Release(account)
@@ -727,6 +744,11 @@ func (h *Handler) forwardGrokImagesRequest(c *gin.Context, inboundEndpoint, imag
 	}
 	if lastStatusCode > 0 && len(lastBody) > 0 {
 		h.sendFinalUpstreamError(c, lastStatusCode, lastBody)
+		return
+	}
+	if h.accountPoolConcurrencySaturated(apiKeyID, retryExclusions.ForSelection(), h.grokMediaDispatchFilter(c, imageModel, identity), auth.DispatchPolicyStandard) {
+		setConcurrencySaturatedRetryAfter(c)
+		c.JSON(http.StatusServiceUnavailable, concurrencySaturatedError())
 		return
 	}
 	c.JSON(http.StatusServiceUnavailable, noAvailableAccountError(""))
@@ -752,8 +774,8 @@ func buildGrokVideoBody(rawBody []byte, model, profileKind string) []byte {
 	if prompt := strings.TrimSpace(gjson.GetBytes(rawBody, "prompt").String()); prompt != "" {
 		body, _ = sjson.SetBytes(body, "prompt", prompt)
 	}
-	if v := gjson.GetBytes(rawBody, "duration"); v.Exists() && v.Int() > 0 {
-		body, _ = sjson.SetBytes(body, "duration", v.Int())
+	if seconds := grokVideoExplicitSeconds(rawBody); seconds > 0 {
+		body, _ = sjson.SetBytes(body, "duration", seconds)
 	}
 	for _, field := range []string{"aspect_ratio", "resolution"} {
 		if value := strings.TrimSpace(gjson.GetBytes(rawBody, field).String()); value != "" {
@@ -938,6 +960,11 @@ func (h *Handler) grokVideoCreate(c *gin.Context, operation string) {
 				SendAPIKeyLimitError(c, http.StatusTooManyRequests, msg)
 				return
 			}
+			if h.accountPoolConcurrencySaturated(apiKeyID, retryExclusions.ForSelection(), h.grokMediaDispatchFilter(c, model, identity), auth.DispatchPolicyStandard) {
+				setConcurrencySaturatedRetryAfter(c)
+				c.JSON(http.StatusServiceUnavailable, concurrencySaturatedError())
+				return
+			}
 			c.JSON(http.StatusServiceUnavailable, noAvailableAccountError(""))
 			return
 		}
@@ -1074,11 +1101,14 @@ func (h *Handler) grokVideoCreate(c *gin.Context, operation string) {
 			return
 		}
 		h.storeGrokVideoBinding(c.Request.Context(), requestID, grokVideoBinding{
-			AccountID: account.ID(),
-			APIKeyID:  apiKeyID,
-			Profile:   result.Profile.Kind,
-			Model:     result.Model,
-			CreatedAt: time.Now().Unix(),
+			AccountID:        account.ID(),
+			APIKeyID:         apiKeyID,
+			Profile:          result.Profile.Kind,
+			Model:            result.Model,
+			CreatedAt:        time.Now().Unix(),
+			RequestModel:     requestModel,
+			EffectiveModel:   logEffectiveModel,
+			RequestedSeconds: grokVideoRequestedSeconds(rawBody, operation),
 		})
 
 		account.Mu().RLock()
@@ -1101,6 +1131,11 @@ func (h *Handler) grokVideoCreate(c *gin.Context, operation string) {
 		h.sendFinalUpstreamError(c, lastStatusCode, lastBody)
 		return
 	}
+	if h.accountPoolConcurrencySaturated(apiKeyID, retryExclusions.ForSelection(), h.grokMediaDispatchFilter(c, model, identity), auth.DispatchPolicyStandard) {
+		setConcurrencySaturatedRetryAfter(c)
+		c.JSON(http.StatusServiceUnavailable, concurrencySaturatedError())
+		return
+	}
 	c.JSON(http.StatusServiceUnavailable, noAvailableAccountError(""))
 }
 
@@ -1112,6 +1147,11 @@ type grokVideoBinding struct {
 	Profile   string `json:"profile"`
 	Model     string `json:"model"`
 	CreatedAt int64  `json:"created_at"`
+	// 以下字段供完成时结算:下游请求模型/映射后生效模型(与提交行一致的计费口径),
+	// 以及请求时长(上游状态体缺 video.duration 时的兜底计费秒数)。
+	RequestModel     string `json:"request_model,omitempty"`
+	EffectiveModel   string `json:"effective_model,omitempty"`
+	RequestedSeconds int    `json:"requested_seconds,omitempty"`
 }
 
 func validGrokVideoRequestID(id string) bool {
@@ -1176,6 +1216,7 @@ func (h *Handler) resolveGrokVideoBinding(c *gin.Context, requestID string) (gro
 // 账号;done 状态里的上游资产 URL 重写为本网关的 /content 代理地址(上游签名
 // URL 会过期,统一走网关下载)。
 func (h *Handler) VideosStatus(c *gin.Context) {
+	start := time.Now()
 	requestID := strings.TrimSpace(c.Param("request_id"))
 	if !validGrokVideoRequestID(requestID) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"message": "Invalid request: request_id is invalid", "type": "invalid_request_error"}})
@@ -1199,6 +1240,9 @@ func (h *Handler) VideosStatus(c *gin.Context) {
 	defer resp.Body.Close()
 	recordGrokUpstreamObservations(account, resp.Header)
 	out, _ := io.ReadAll(io.LimitReader(resp.Body, grokVideoStatusBodyLimit))
+	// 终态(done/failed/expired)在首次被观察到时结算一次;引擎过载等失败可能以
+	// 非 2xx 携带 failed 状态体返回,因此先于状态码分支处理。
+	h.settleGrokVideo(c, requestID, binding, out, int(time.Since(start).Milliseconds()))
 	// 任务进行中上游以 202 携带 {"status":"pending","progress":N} 返回,
 	// 与 200 一样是合法状态体;统一以 200 透传,轮询客户端只看 body.status。
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {

@@ -46,7 +46,7 @@ func ageAccountForOfficialUsage(t *testing.T, store *auth.Store, id int64) {
 	if account == nil {
 		t.Fatalf("account %d not in store", id)
 	}
-	account.AddedAt = time.Now().Add(-25 * time.Hour).UnixNano()
+	account.AddedAt.Store(time.Now().Add(-25 * time.Hour).UnixNano())
 }
 
 func waitAccountDailyUsage(t *testing.T, db *database.DB, id int64) {

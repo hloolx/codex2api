@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -299,7 +298,7 @@ func TestCodexKeyGroupIntersectionAndLogicalLease(t *testing.T) {
 			if r.Code != 200 || bpsCalls != 1 || nativeCalls != 1 {
 				t.Fatalf("route result status=%d calls=%d/%d: %s", r.Code, bpsCalls, nativeCalls, r.Body.String())
 			}
-			if atomic.LoadInt64(&chosen.ActiveRequests) != 0 || atomic.LoadInt64(&chosen.TotalRequests) != 1 || atomic.LoadInt64(&forbidden.TotalRequests) != 0 {
+			if chosen.ActiveRequests.Load() != 0 || chosen.TotalRequests.Load() != 1 || forbidden.TotalRequests.Load() != 0 {
 				t.Fatal("lease or request accounting duplicated")
 			}
 		})

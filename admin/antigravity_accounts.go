@@ -157,6 +157,11 @@ func antigravityPublishedQuota(raw auth.AntigravityQuotaSnapshot) auth.Antigravi
 		if defaultWireID, ok := proxy.AntigravityWireModelID(publicID); ok {
 			wireIDs = append([]string{defaultWireID}, wireIDs...)
 		}
+		// Discovered upstream models are published under their actual ID, so the
+		// public ID is also the wire ID.
+		if len(wireIDs) == 0 {
+			wireIDs = []string{publicID}
+		}
 		var (
 			model auth.AntigravityModelQuota
 			found bool

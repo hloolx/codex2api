@@ -29,6 +29,7 @@ const (
 	// Claude 原生渠道上线后的存量回填：只修复能从当前账号、端点或模型可靠
 	// 识别的记录；不把混合分组或历史不明请求强行改写成 Claude。
 	dataMigrationClaudeProviderV1 = "20260829_claude_provider_backfill_v1"
+	dataMigrationDaybreakUsageV1  = "20260926_daybreak_usage_program_v1"
 	dataMigrationTimeout          = 5 * time.Minute
 )
 
@@ -60,7 +61,10 @@ func (db *DB) runDataMigrations(ctx context.Context) error {
 	if err := db.runDataMigrationOnce(ctx, dataMigrationGroupChannelV1, db.classifyAccountGroupChannels); err != nil {
 		return err
 	}
-	return db.runDataMigrationOnce(ctx, dataMigrationClaudeProviderV1, db.backfillClaudeProviderData)
+	if err := db.runDataMigrationOnce(ctx, dataMigrationClaudeProviderV1, db.backfillClaudeProviderData); err != nil {
+		return err
+	}
+	return db.runDataMigrationOnce(ctx, dataMigrationDaybreakUsageV1, db.backfillDaybreakUsageProgram)
 }
 
 // classifyAccountGroupChannels 把成员清一色是 Grok 账号的存量分组归到 grok 渠道。

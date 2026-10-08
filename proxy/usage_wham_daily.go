@@ -176,8 +176,7 @@ func queryWhamDailyUsageWithURL(ctx context.Context, account *auth.Account, prox
 	}
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("User-Agent", MinimalCodexCLIUserAgentForHeaders())
-	req.Header.Set("Originator", Originator)
+	ResolveCodexMaintenanceIdentity(account, nil).Apply(req.Header)
 	// 与 wham 用量查询一致：自定义头覆盖工作区 ID 时，统计必须查覆盖后的空间，
 	// 否则拿到的是与实际流量不同的空间。
 	if accountID := account.EffectiveAccountID(); accountID != "" {

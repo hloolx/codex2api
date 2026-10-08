@@ -46,6 +46,8 @@ type qualityTestRequest struct {
 	PromptID   int64  `json:"prompt_id,omitempty"`
 	PresetKey  string `json:"preset_key,omitempty"`
 	PresetName string `json:"preset_name,omitempty"`
+	// TimeoutMinutes is the run's hard limit; 0 selects the default.
+	TimeoutMinutes int `json:"timeout_minutes,omitempty"`
 }
 
 var builtinPresetKey = regexp.MustCompile(`^[a-z0-9_-]{1,64}$`)
@@ -139,7 +141,7 @@ func (h *Handler) qualityTestOptionsForAccount(ctx context.Context, account *aut
 	for _, model := range candidates {
 		model = strings.TrimSpace(model)
 		// Effort aliases are proxy routing shortcuts, not upstream model IDs.
-		if !isTextConnectionModel(model) || strings.ContainsAny(model, "()") || slices.Contains(options.Models, model) {
+		if strings.EqualFold(model, "codex-auto-review") || !isTextConnectionModel(model) || strings.ContainsAny(model, "()") || slices.Contains(options.Models, model) {
 			continue
 		}
 		options.Models = append(options.Models, model)

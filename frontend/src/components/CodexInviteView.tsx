@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { getTimezone } from '../utils/time'
 import type { KeyboardEvent as ReactKeyboardEvent } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useSearchParams } from 'react-router-dom'
@@ -1243,7 +1244,7 @@ function FreshnessHint({ meta }: { meta: InviteCacheMeta | null }) {
       className="inline-flex shrink-0 items-center gap-1 rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium text-muted-foreground"
     >
       <Clock className="size-3" />
-      {observed.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+      {observed.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', timeZone: getTimezone() })}
     </span>
   )
 }

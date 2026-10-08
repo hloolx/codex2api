@@ -91,11 +91,12 @@ func (a *Account) AntigravityAPIKey() string {
 // Public model discovery expands these backing IDs through the proxy's native
 // model projection; keeping wire IDs here preserves request admission and
 // capability checks when an account has not completed its first sync yet.
+// Claude is deliberately absent: Cloud Code migrates accounts between Claude
+// generations one by one (a retired ID returns "no longer available"), and the
+// Gemini API used by API-key accounts has no Claude at all, so only a
+// synchronized catalog can say which Claude IDs an account may call.
 func AntigravityDefaultModelIDs() []string {
 	return []string{
-		"gemini-3.5-flash-extra-low",
-		"gemini-3.5-flash-low",
-		"gemini-3-flash-agent",
 		"gemini-3.6-flash-low",
 		"gemini-3.6-flash-medium",
 		"gemini-3.6-flash-high",
@@ -103,8 +104,6 @@ func AntigravityDefaultModelIDs() []string {
 		"gemini-3.8-flash-tiered",
 		"gemini-3.1-pro-low",
 		"gemini-pro-agent",
-		"claude-opus-4-6-thinking",
-		"claude-sonnet-4-6",
 		"gpt-oss-120b-medium",
 	}
 }
@@ -123,6 +122,18 @@ func (a *Account) AntigravityModels() []string {
 		return cloneStringSlice(a.Models)
 	}
 	return AntigravityDefaultModelIDs()
+}
+
+// AntigravityModelMaxOutputTokens returns the provider-reported output limit
+// for a wire model from the last synchronized quota snapshot.
+func (a *Account) AntigravityModelMaxOutputTokens(model string) (int, bool) {
+	if a == nil {
+		return 0, false
+	}
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	limit, ok := a.antigravityModelMaxOutput[strings.ToLower(strings.TrimSpace(model))]
+	return limit, ok
 }
 
 // AntigravitySupportsModel keeps admission aligned with the exposed catalog.

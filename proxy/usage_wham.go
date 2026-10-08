@@ -382,8 +382,7 @@ func queryWhamUsageWithURL(ctx context.Context, account *auth.Account, proxyURL,
 	}
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("User-Agent", MinimalCodexCLIUserAgentForHeaders())
-	req.Header.Set("Originator", Originator)
+	ResolveCodexMaintenanceIdentity(account, nil).Apply(req.Header)
 	// 用 EffectiveAccountID:自定义头覆盖了工作区 ID 时,额度必须查覆盖后的空间,
 	// 否则进度条/自动暂停/智能配速统计的是与实际流量不同的空间。
 	if accountID := account.EffectiveAccountID(); accountID != "" {
@@ -496,8 +495,7 @@ func queryWhamResetCreditsWithURL(ctx context.Context, account *auth.Account, pr
 	}
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("User-Agent", MinimalCodexCLIUserAgentForHeaders())
-	req.Header.Set("Originator", Originator)
+	ResolveCodexMaintenanceIdentity(account, nil).Apply(req.Header)
 	// 与 wham 查询一致,重置券按自定义头覆盖后的空间查询。
 	if accountID := account.EffectiveAccountID(); accountID != "" {
 		req.Header.Set("chatgpt-account-id", accountID)
@@ -583,8 +581,7 @@ func consumeResetCreditWithURL(ctx context.Context, account *auth.Account, proxy
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("User-Agent", MinimalCodexCLIUserAgentForHeaders())
-	req.Header.Set("Originator", Originator)
+	ResolveCodexMaintenanceIdentity(account, nil).Apply(req.Header)
 	// 与 wham 查询一致,重置额度也作用于自定义头覆盖后的空间。
 	if accountID := account.EffectiveAccountID(); accountID != "" {
 		req.Header.Set("chatgpt-account-id", accountID)
@@ -769,6 +766,11 @@ const (
 	whamWindow5hSeconds int64 = 18_000
 	whamWindow7dSeconds int64 = 604_800
 )
+
+// IsWhamLongWindowSeconds 判断窗口是否归入 7d 槽：plus/pro 的周窗，或 team 等 plan 的月窗。
+func IsWhamLongWindowSeconds(sec int64) bool {
+	return sec == whamWindow7dSeconds || auth.IsMonthlyWindowSeconds(sec)
+}
 
 // pickClassifiedWhamWindows 把 primary/secondary 两个窗口归类到 5h/7d 槽位。
 //

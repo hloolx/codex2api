@@ -275,7 +275,7 @@ func (e *EnhancedProxyPool) SetProxyWeight(url string, weight int64) {
 
 // StoreProxyPoolIntegration Store 与代理池集成
 type StoreProxyPoolIntegration struct {
-	store       *Store
+	store        *Store
 	enhancedPool *EnhancedProxyPool
 	useEnhanced  atomic.Bool
 }

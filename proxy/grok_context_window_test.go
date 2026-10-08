@@ -46,6 +46,13 @@ func TestGrokCompactionAtDerivation(t *testing.T) {
 		t.Fatalf("未观测到窗口时应回落默认值，got %q want %q", got, grokCompactionAtDefault)
 	}
 
+	// cli-chat-proxy 对 grok-4.7-build-fast 固定回 256000，但官方 CLI 仍发 400000。
+	// 比默认阈值更小的观测不能把 x-compaction-at 压下去。
+	account.SetGrokContextWindow(256000)
+	if got := grokCompactionAtForAccount(account); got != grokCompactionAtDefault {
+		t.Fatalf("256k 窗口不应把压缩阈值压到默认值以下，got %q", got)
+	}
+
 	// 实抓值：context_window=500000、auto_compact_threshold_percent=80 → 400000。
 	account.SetGrokContextWindow(500000)
 	if got := grokCompactionAtForAccount(account); got != "400000" {

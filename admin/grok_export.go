@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"path"
@@ -311,6 +312,141 @@ func isGrokAccountRow(row *database.AccountRow) bool {
 		return true
 	}
 	return strings.EqualFold(strings.TrimSpace(row.GetCredential("upstream_type")), auth.UpstreamGrok)
+}
+
+// grokCLIAuthMinRemaining 是生成 CLI auth.json 时 access token 至少要剩的有效期；
+// 不足时先由网关刷新，避免交出一个几分钟后就过期的 key。
+const grokCLIAuthMinRemaining = 30 * time.Minute
+
+// grokCLIAuthEntry 是 Grok CLI（0.2.102+）~/.grok/auth.json 的单个作用域条目，
+// 外层以 "<oidc_issuer>::<oidc_client_id>" 作 key，access token 存在 key 字段。
+// first_name / team_id 等资料字段网关从未保存，因此不输出。
+type grokCLIAuthEntry struct {
+	Key           string `json:"key"`
+	AuthMode      string `json:"auth_mode"`
+	CreateTime    string `json:"create_time,omitempty"`
+	UserID        string `json:"user_id,omitempty"`
+	Email         string `json:"email,omitempty"`
+	PrincipalType string `json:"principal_type,omitempty"`
+	PrincipalID   string `json:"principal_id,omitempty"`
+	RefreshToken  string `json:"refresh_token,omitempty"`
+	ExpiresAt     string `json:"expires_at,omitempty"`
+	OIDCIssuer    string `json:"oidc_issuer"`
+	OIDCClientID  string `json:"oidc_client_id"`
+}
+
+// grokCLIAuthJSONFromRow 把 Grok OAuth 账号转成 CLI auth.json。includeRefreshToken=false
+// 时只交出 access token：xAI 的 RT 家族会轮换，网关与 CLI 共用同一 RT 时先刷新的一方
+// 会让另一方 invalid_grant。
+func grokCLIAuthJSONFromRow(row *database.AccountRow, includeRefreshToken bool) (map[string]grokCLIAuthEntry, error) {
+	if !isGrokAccountRow(row) {
+		return nil, errGrokAccountRequired
+	}
+	if row.GetCredential("api_key") != "" {
+		return nil, errors.New("API Key 账号不使用 OAuth 登录，无法生成 Grok CLI auth.json")
+	}
+	accessToken := row.GetCredential("access_token")
+	if accessToken == "" {
+		return nil, errors.New("账号缺少 access token，请先刷新账号后再生成 auth.json")
+	}
+	refreshToken := row.GetCredential("refresh_token")
+	if includeRefreshToken && refreshToken == "" {
+		return nil, errors.New("账号缺少 refresh token，只能生成仅含 access token 的 auth.json")
+	}
+
+	subject, issuedAt, tokenExpiresAt := auth.GrokAccessTokenHints(accessToken)
+	issuer := strings.TrimRight(row.GetCredential("grok_oidc_issuer"), "/")
+	if issuer == "" {
+		issuer = auth.GrokDefaultOIDCIssuer
+	}
+	clientID := row.GetCredential("grok_client_id")
+	if clientID == "" {
+		clientID = auth.GrokDefaultOAuthClientID
+	}
+	userID := row.GetCredential("account_id")
+	if userID == "" {
+		userID = subject
+	}
+	principalID := row.GetCredential("grok_principal_id")
+	if principalID == "" {
+		principalID = userID
+	}
+	principalType := row.GetCredential("grok_principal_type")
+	if principalType == "" && principalID != "" && principalID == userID {
+		principalType = "User"
+	}
+	expiresAt := grokParseExportTime(strings.TrimSpace(row.GetCredential("expires_at")))
+	if expiresAt.IsZero() {
+		expiresAt = tokenExpiresAt
+	}
+
+	entry := grokCLIAuthEntry{
+		Key:           accessToken,
+		AuthMode:      "oidc",
+		UserID:        userID,
+		Email:         row.GetCredential("email"),
+		PrincipalType: principalType,
+		PrincipalID:   principalID,
+		OIDCIssuer:    issuer,
+		OIDCClientID:  clientID,
+	}
+	if includeRefreshToken {
+		entry.RefreshToken = refreshToken
+	}
+	if !issuedAt.IsZero() {
+		entry.CreateTime = issuedAt.UTC().Format(time.RFC3339Nano)
+	}
+	if !expiresAt.IsZero() {
+		entry.ExpiresAt = expiresAt.UTC().Format(time.RFC3339Nano)
+	}
+	return map[string]grokCLIAuthEntry{issuer + "::" + clientID: entry}, nil
+}
+
+// GetGrokAccountAuthJSON 生成单个 Grok OAuth 账号可直接放进 ~/.grok/auth.json 的文件
+// （GET /api/admin/accounts/:id/grok/auth-json?include_refresh_token=true|false）。
+func (h *Handler) GetGrokAccountAuthJSON(c *gin.Context) {
+	id, ok := parseGrokAdminAccountID(c)
+	if !ok {
+		return
+	}
+	includeRefreshToken := strings.EqualFold(strings.TrimSpace(c.Query("include_refresh_token")), "true")
+
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
+	defer cancel()
+
+	account, _, err := h.grokAdminAccount(ctx, id)
+	if err != nil {
+		writeGrokAdminError(c, err)
+		return
+	}
+	if account.GrokAuthKind() == auth.GrokAuthKindOAuth && grokAccessTokenExpiresWithin(account, grokCLIAuthMinRemaining) {
+		if refreshErr := h.store.RefreshGrokAccountByID(ctx, id); refreshErr != nil && grokAccessTokenStale(account) {
+			writeError(c, http.StatusConflict, "access token 已过期且刷新失败，请先刷新账号后再生成 auth.json")
+			return
+		}
+	}
+
+	row, err := h.db.GetAccountByID(ctx, id)
+	if err != nil {
+		writeGrokAdminError(c, err)
+		return
+	}
+	file, err := grokCLIAuthJSONFromRow(row, includeRefreshToken)
+	if err != nil {
+		if errors.Is(err, errGrokAccountRequired) {
+			writeGrokAdminError(c, err)
+			return
+		}
+		writeError(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	encoded, err := json.MarshalIndent(file, "", "  ")
+	if err != nil {
+		writeError(c, http.StatusInternalServerError, "序列化 auth.json 失败: "+err.Error())
+		return
+	}
+	writeSecretDownloadHeaders(c, "auth.json")
+	c.Data(http.StatusOK, "application/json; charset=utf-8", encoded)
 }
 
 // buildGrokExportZIP 把多个条目打成 ZIP，每个条目一个 <sub>.json。

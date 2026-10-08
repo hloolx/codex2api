@@ -45,15 +45,20 @@ func TestCopyClaudeNativeResponseHeadersPreservesUsageMetadata(t *testing.T) {
 	ctx, _ := gin.CreateTestContext(recorder)
 	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
 	header := http.Header{
-		"anthropic-ratelimit-unified-5h-utilization": []string{"0.42"},
-		"anthropic-ratelimit-unified-5h-reset":       []string{"4102444800"},
-		"anthropic-ratelimit-unified-status":         []string{"allowed"},
-		"anthropic-version":                          []string{"2023-06-01"},
-		"Authorization":                              []string{"Bearer secret"},
-		"Set-Cookie":                                 []string{"secret=1"},
-		"X-Leak":                                     []string{"nope"},
+		"anthropic-ratelimit-unified-5h-utilization":    []string{"0.42"},
+		"anthropic-ratelimit-unified-5h-reset":          []string{"4102444800"},
+		"anthropic-ratelimit-unified-7d_oi-utilization": []string{"0.0"},
+		"anthropic-ratelimit-unified-7d_oi-reset":       []string{"4102444800"},
+		"anthropic-ratelimit-unified-status":            []string{"allowed"},
+		"anthropic-version":                             []string{"2023-06-01"},
+		"Authorization":                                 []string{"Bearer secret"},
+		"Set-Cookie":                                    []string{"secret=1"},
+		"X-Leak":                                        []string{"nope"},
 	}
 	copyClaudeNativeResponseHeaders(ctx, header)
+	if recorder.Header().Get("anthropic-ratelimit-unified-7d_oi-utilization") != "0.0" || recorder.Header().Get("anthropic-ratelimit-unified-7d_oi-reset") != "4102444800" {
+		t.Fatalf("Fable usage headers were not forwarded: %#v", recorder.Header())
+	}
 	if recorder.Header().Get("anthropic-ratelimit-unified-5h-utilization") != "0.42" || recorder.Header().Get("anthropic-version") != "2023-06-01" {
 		t.Fatalf("Claude usage headers were not forwarded: %#v", recorder.Header())
 	}

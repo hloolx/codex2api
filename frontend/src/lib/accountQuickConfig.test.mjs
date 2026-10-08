@@ -144,3 +144,10 @@ test("invalid custom header JSON is rejected instead of being saved as empty", (
   assert.equal(result.ok, false);
   if (!result.ok) assert.equal(result.error, "invalid_headers");
 });
+
+for (const mode of ['single_machine_multi_window']) {
+  test(`quick configuration preserves ${mode} on reopening`, () => {
+    assert.equal(normalizeCodexFingerprintMode(mode), mode);
+    assert.equal(formStateFromAccount({ ...detailedRow, codex_fingerprint_mode: mode }).fingerprintMode, mode);
+  });
+}

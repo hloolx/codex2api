@@ -273,3 +273,70 @@ func invokeAccountGroupHandler(t *testing.T, method, path string, params gin.Par
 	handler(ginContext)
 	return recorder
 }
+
+// issue #763:非 Codex 渠道页的"批量设置分组"走同一个 batch-update;同渠道账号整批移入,
+// 混入异渠道账号则整批拒绝,不落库。
+func TestBatchUpdateAccountsMovesNonCodexAccountsIntoChannelGroup(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := newTestAdminDB(t)
+	ctx := context.Background()
+	handler := &Handler{db: db}
+
+	created := invokeAccountGroupHandler(t, http.MethodPost, "/api/admin/account-groups", nil, `{"name":"ag-batch","channel":"antigravity"}`, handler.CreateAccountGroup)
+	if created.Code != http.StatusOK {
+		t.Fatalf("create group status = %d: %s", created.Code, created.Body.String())
+	}
+	var group struct {
+		ID int64 `json:"id"`
+	}
+	if err := json.Unmarshal(created.Body.Bytes(), &group); err != nil {
+		t.Fatalf("decode create response: %v", err)
+	}
+
+	agIDs := make([]int64, 0, 2)
+	for _, name := range []string{"ag-1", "ag-2"} {
+		id, err := db.InsertAccountWithCredentials(ctx, name, map[string]interface{}{"upstream_type": auth.UpstreamAntigravity, "api_key": "secret-" + name}, "")
+		if err != nil {
+			t.Fatalf("insert %s: %v", name, err)
+		}
+		agIDs = append(agIDs, id)
+	}
+	codexID, err := db.InsertAccount(ctx, "codex-1", "rt_codex_1", "")
+	if err != nil {
+		t.Fatalf("insert codex: %v", err)
+	}
+
+	mixed := invokeAccountGroupHandler(t, http.MethodPost, "/api/admin/accounts/batch-update", nil,
+		fmt.Sprintf(`{"ids":[%d,%d,%d],"group_ids":[%d]}`, agIDs[0], agIDs[1], codexID, group.ID), handler.BatchUpdateAccounts)
+	if mixed.Code != http.StatusBadRequest {
+		t.Fatalf("mixed-channel status = %d, want 400: %s", mixed.Code, mixed.Body.String())
+	}
+	for _, id := range append(append([]int64{}, agIDs...), codexID) {
+		if ids, err := db.GetAccountGroupIDs(ctx, id); err != nil || len(ids) != 0 {
+			t.Fatalf("account %d groups after rejected batch = %v (err %v), want none", id, ids, err)
+		}
+	}
+
+	moved := invokeAccountGroupHandler(t, http.MethodPost, "/api/admin/accounts/batch-update", nil,
+		fmt.Sprintf(`{"ids":[%d,%d],"group_ids":[%d]}`, agIDs[0], agIDs[1], group.ID), handler.BatchUpdateAccounts)
+	if moved.Code != http.StatusOK {
+		t.Fatalf("batch move status = %d: %s", moved.Code, moved.Body.String())
+	}
+	for _, id := range agIDs {
+		ids, err := db.GetAccountGroupIDs(ctx, id)
+		if err != nil || len(ids) != 1 || ids[0] != group.ID {
+			t.Fatalf("account %d groups = %v (err %v), want [%d]", id, ids, err, group.ID)
+		}
+	}
+
+	cleared := invokeAccountGroupHandler(t, http.MethodPost, "/api/admin/accounts/batch-update", nil,
+		fmt.Sprintf(`{"ids":[%d,%d],"group_ids":[]}`, agIDs[0], agIDs[1]), handler.BatchUpdateAccounts)
+	if cleared.Code != http.StatusOK {
+		t.Fatalf("batch clear status = %d: %s", cleared.Code, cleared.Body.String())
+	}
+	for _, id := range agIDs {
+		if ids, err := db.GetAccountGroupIDs(ctx, id); err != nil || len(ids) != 0 {
+			t.Fatalf("account %d groups after clear = %v (err %v), want none", id, ids, err)
+		}
+	}
+}

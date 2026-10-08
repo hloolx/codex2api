@@ -131,10 +131,9 @@ func TestStoreNextExcludingRespectsAPIKeyWhitelist(t *testing.T) {
 	restricted.SetAllowedAPIKeyIDs([]int64{2})
 	fallback := newFastSchedulerTestAccount(2, HealthTierHealthy, 80, 1)
 
-	store := &Store{
-		accounts:       []*Account{restricted, fallback},
-		maxConcurrency: 1,
-	}
+	store := (&Store{
+		accounts: []*Account{restricted, fallback},
+	}).withMaxConcurrency(1)
 
 	got := store.NextExcluding(1, nil)
 	if got == nil {
@@ -153,10 +152,9 @@ func TestStoreNextExcludingRespectsAPIKeyAllowedGroups(t *testing.T) {
 	fallback := newFastSchedulerTestAccount(2, HealthTierHealthy, 80, 1)
 	fallback.GroupIDs = []int64{20}
 
-	store := &Store{
-		accounts:       []*Account{restricted, fallback},
-		maxConcurrency: 1,
-	}
+	store := (&Store{
+		accounts: []*Account{restricted, fallback},
+	}).withMaxConcurrency(1)
 	store.SetAPIKeyAllowedGroups(1, []int64{20})
 
 	got := store.NextExcluding(1, nil)
@@ -176,10 +174,9 @@ func TestStoreGroupUpdatesImmediatelyAffectAPIKeyScheduling(t *testing.T) {
 	groupB := newFastSchedulerTestAccount(2, HealthTierHealthy, 80, 1)
 	groupB.GroupIDs = []int64{20}
 
-	store := &Store{
-		accounts:       []*Account{groupA, groupB},
-		maxConcurrency: 1,
-	}
+	store := (&Store{
+		accounts: []*Account{groupA, groupB},
+	}).withMaxConcurrency(1)
 	store.rebuildAccountIndex()
 	store.SetAPIKeyAllowedGroups(1, []int64{20})
 
@@ -215,10 +212,9 @@ func TestFastSchedulerGroupUpdatesImmediatelyAffectAPIKeyScheduling(t *testing.T
 	groupB := newFastSchedulerTestAccount(2, HealthTierHealthy, 80, 1)
 	groupB.GroupIDs = []int64{20}
 
-	store := &Store{
-		accounts:       []*Account{groupA, groupB},
-		maxConcurrency: 1,
-	}
+	store := (&Store{
+		accounts: []*Account{groupA, groupB},
+	}).withMaxConcurrency(1)
 	store.rebuildAccountIndex()
 	store.SetFastSchedulerEnabled(true)
 	store.SetAPIKeyAllowedGroups(1, []int64{20})
@@ -254,10 +250,9 @@ func TestStoreNextSkipsDispatchPausedAccount(t *testing.T) {
 	atomic.StoreInt32(&paused.DispatchPaused, 1)
 	fallback := newFastSchedulerTestAccount(2, HealthTierHealthy, 80, 1)
 
-	store := &Store{
-		accounts:       []*Account{paused, fallback},
-		maxConcurrency: 1,
-	}
+	store := (&Store{
+		accounts: []*Account{paused, fallback},
+	}).withMaxConcurrency(1)
 
 	got := store.Next()
 	if got == nil {
@@ -343,10 +338,9 @@ func TestStoreNextExcludingWithFilterRespectsPlanFilter(t *testing.T) {
 	pro := newFastSchedulerTestAccount(2, HealthTierHealthy, 80, 1)
 	pro.PlanType = "pro"
 
-	store := &Store{
-		accounts:       []*Account{plus, pro},
-		maxConcurrency: 1,
-	}
+	store := (&Store{
+		accounts: []*Account{plus, pro},
+	}).withMaxConcurrency(1)
 
 	got := store.NextExcludingWithFilter(0, nil, func(acc *Account) bool {
 		return acc.GetPlanType() == "pro"
@@ -449,13 +443,12 @@ func TestFastSchedulerSkipsStaleBucketEntryWithoutUpdate(t *testing.T) {
 }
 
 func TestBuildFastSchedulerFromStore(t *testing.T) {
-	store := &Store{
+	store := (&Store{
 		accounts: []*Account{
 			newFastSchedulerTestAccount(1, HealthTierHealthy, 100, 4),
 			newFastSchedulerTestAccount(2, HealthTierWarm, 80, 2),
 		},
-		maxConcurrency: 4,
-	}
+	}).withMaxConcurrency(4)
 
 	scheduler := store.BuildFastScheduler()
 	sizes := scheduler.BucketSizes()
@@ -466,10 +459,10 @@ func TestBuildFastSchedulerFromStore(t *testing.T) {
 
 func TestFastSchedulerDispatchScoreOutranksProvenHistory(t *testing.T) {
 	highScore := newFastSchedulerTestAccount(1, HealthTierHealthy, 150, 1)
-	atomic.StoreInt64(&highScore.TotalRequests, 0)
+	highScore.TotalRequests.Store(0)
 
 	proven := newFastSchedulerTestAccount(2, HealthTierHealthy, 100, 1)
-	atomic.StoreInt64(&proven.TotalRequests, 11)
+	proven.TotalRequests.Store(11)
 
 	scheduler := NewFastScheduler(1, "round_robin")
 	scheduler.Rebuild([]*Account{highScore, proven})
@@ -487,10 +480,10 @@ func TestFastSchedulerDispatchScoreOutranksProvenHistory(t *testing.T) {
 
 func TestFastSchedulerProvenHistoryBreaksDispatchScoreTies(t *testing.T) {
 	unproven := newFastSchedulerTestAccount(1, HealthTierHealthy, 100, 1)
-	atomic.StoreInt64(&unproven.TotalRequests, 0)
+	unproven.TotalRequests.Store(0)
 
 	proven := newFastSchedulerTestAccount(2, HealthTierHealthy, 100, 1)
-	atomic.StoreInt64(&proven.TotalRequests, 11)
+	proven.TotalRequests.Store(11)
 
 	scheduler := NewFastScheduler(1, "round_robin")
 	scheduler.Rebuild([]*Account{unproven, proven})
@@ -513,7 +506,7 @@ func TestFastSchedulerPrefersPremium7dResetSoonOverProvenAccount(t *testing.T) {
 	later.UsagePercent7d = 68
 	later.UsagePercent7dValid = true
 	later.Reset7dAt = now.Add(5 * 24 * time.Hour)
-	atomic.StoreInt64(&later.TotalRequests, 450)
+	later.TotalRequests.Store(450)
 
 	soon := newFastSchedulerTestAccount(2, HealthTierHealthy, 150, 1)
 	soon.PlanType = "plus"
@@ -577,10 +570,9 @@ func TestPersistUsageSnapshot5hOnlyUpdatesFastSchedulerPriority(t *testing.T) {
 	soon.UsagePercent5hValid = true
 	soon.Reset5hAt = now.Add(5 * time.Hour)
 
-	store := &Store{
-		accounts:       []*Account{later, soon},
-		maxConcurrency: 1,
-	}
+	store := (&Store{
+		accounts: []*Account{later, soon},
+	}).withMaxConcurrency(1)
 	store.SetFastSchedulerEnabled(true)
 
 	soon.SetUsageSnapshot5h(25, time.Now().Add(30*time.Minute))
@@ -603,13 +595,12 @@ func TestStoreFastSchedulerToggle(t *testing.T) {
 	cooling.CooldownUtil = time.Now().Add(5 * time.Minute)
 	cooling.CooldownReason = "rate_limited"
 
-	store := &Store{
+	store := (&Store{
 		accounts: []*Account{
 			cooling,
 			newFastSchedulerTestAccount(2, HealthTierHealthy, 100, 1),
 		},
-		maxConcurrency: 2,
-	}
+	}).withMaxConcurrency(2)
 
 	if store.FastSchedulerEnabled() {
 		t.Fatal("FastSchedulerEnabled() should be false by default")
@@ -643,10 +634,9 @@ func TestStoreFastSchedulerToggle(t *testing.T) {
 
 func TestStoreFastSchedulerTracksCooldownTransition(t *testing.T) {
 	acc := newFastSchedulerTestAccount(1, HealthTierHealthy, 100, 2)
-	store := &Store{
-		accounts:       []*Account{acc},
-		maxConcurrency: 2,
-	}
+	store := (&Store{
+		accounts: []*Account{acc},
+	}).withMaxConcurrency(2)
 	store.SetFastSchedulerEnabled(true)
 
 	got := store.Next()
@@ -853,20 +843,19 @@ func newBenchmarkStore(total int, maxConcurrency int64) *Store {
 		})
 	}
 
-	return &Store{
-		accounts:       accounts,
-		maxConcurrency: maxConcurrency,
-	}
+	return (&Store{
+		accounts: accounts,
+	}).withMaxConcurrency(maxConcurrency)
 }
 
 func TestFastSchedulerRelease(t *testing.T) {
 	acc := newFastSchedulerTestAccount(1, HealthTierHealthy, 100, 2)
-	atomic.StoreInt64(&acc.ActiveRequests, 1)
+	acc.ActiveRequests.Store(1)
 
 	scheduler := NewFastScheduler(2, "round_robin")
 	scheduler.Release(acc)
 
-	if got := atomic.LoadInt64(&acc.ActiveRequests); got != 0 {
+	if got := acc.ActiveRequests.Load(); got != 0 {
 		t.Fatalf("ActiveRequests after Release() = %d, want 0", got)
 	}
 }
@@ -993,8 +982,8 @@ func TestFastSchedulerPrefersLowerOccupiedWhenUsageTied(t *testing.T) {
 		BaseConcurrencyEffective: 4,
 		DynamicConcurrencyLimit:  4,
 	}
-	atomic.StoreInt64(&busy.ActiveRequests, 2)
-	atomic.StoreInt64(&busy.OccupiedRequests, 2)
+	busy.ActiveRequests.Store(2)
+	busy.OccupiedRequests.Store(2)
 
 	scheduler := NewFastScheduler(4, "remaining_quota")
 	scheduler.Rebuild([]*Account{busy, idle})
@@ -1030,8 +1019,8 @@ func TestFastSchedulerRemainingQuotaStillPrefersLowerUsageDespiteOccupancy(t *te
 		BaseConcurrencyEffective: 4,
 		DynamicConcurrencyLimit:  4,
 	}
-	atomic.StoreInt64(&lowUsageBusy.ActiveRequests, 2)
-	atomic.StoreInt64(&lowUsageBusy.OccupiedRequests, 2)
+	lowUsageBusy.ActiveRequests.Store(2)
+	lowUsageBusy.OccupiedRequests.Store(2)
 
 	scheduler := NewFastScheduler(4, "remaining_quota")
 	scheduler.Rebuild([]*Account{lowUsageBusy, highUsageIdle})
@@ -1050,10 +1039,10 @@ func TestFastSchedulerRoundRobinPrefersLowerOccupiedUnderBurst(t *testing.T) {
 	a1 := newFastSchedulerTestAccount(1, HealthTierHealthy, 100, 4)
 	a2 := newFastSchedulerTestAccount(2, HealthTierHealthy, 100, 4)
 	a3 := newFastSchedulerTestAccount(3, HealthTierHealthy, 100, 4)
-	atomic.StoreInt64(&a1.ActiveRequests, 2)
-	atomic.StoreInt64(&a1.OccupiedRequests, 2)
-	atomic.StoreInt64(&a2.ActiveRequests, 1)
-	atomic.StoreInt64(&a2.OccupiedRequests, 1)
+	a1.ActiveRequests.Store(2)
+	a1.OccupiedRequests.Store(2)
+	a2.ActiveRequests.Store(1)
+	a2.OccupiedRequests.Store(1)
 
 	scheduler := NewFastScheduler(4, "round_robin")
 	scheduler.Rebuild([]*Account{a1, a2, a3})
@@ -1079,7 +1068,7 @@ func TestFastSchedulerRemainingQuotaTieBreakProvenThenDBID(t *testing.T) {
 		BaseConcurrencyEffective: 2,
 		DynamicConcurrencyLimit:  2,
 	}
-	unproven.TotalRequests = 0 // not proven
+	unproven.TotalRequests.Store(0) // not proven
 
 	proven := &Account{
 		DBID:                     2,
@@ -1091,7 +1080,7 @@ func TestFastSchedulerRemainingQuotaTieBreakProvenThenDBID(t *testing.T) {
 		BaseConcurrencyEffective: 2,
 		DynamicConcurrencyLimit:  2,
 	}
-	proven.TotalRequests = 11 // proven (>10)
+	proven.TotalRequests.Store(11) // proven (>10)
 
 	scheduler := NewFastScheduler(4, "remaining_quota")
 	scheduler.Rebuild([]*Account{unproven, proven})
@@ -1374,10 +1363,9 @@ func TestStoreNextExcludingRespectsAPIKeyAllowedPlans(t *testing.T) {
 	free := newFastSchedulerTestAccount(3, HealthTierHealthy, 100, 1)
 	free.PlanType = "free"
 
-	store := &Store{
-		accounts:       []*Account{plus, team, free},
-		maxConcurrency: 1,
-	}
+	store := (&Store{
+		accounts: []*Account{plus, team, free},
+	}).withMaxConcurrency(1)
 	store.rebuildAccountIndex()
 	// Key 1 只允许 plus / team 套餐的账号。
 	store.SetAPIKeyAllowedPlans(1, []string{"Plus", "team"})
@@ -1409,10 +1397,9 @@ func TestStoreAPIKeyPlanFilterMatchesProLiteDistinctly(t *testing.T) {
 	pro := newFastSchedulerTestAccount(2, HealthTierHealthy, 110, 1)
 	pro.PlanType = "pro"
 
-	store := &Store{
-		accounts:       []*Account{prolite, pro},
-		maxConcurrency: 1,
-	}
+	store := (&Store{
+		accounts: []*Account{prolite, pro},
+	}).withMaxConcurrency(1)
 	store.rebuildAccountIndex()
 	// 选择 "prolite" 只匹配 prolite 账号,不应命中 pro 账号(两者相互独立)。
 	store.SetAPIKeyAllowedPlans(1, []string{"prolite"})
@@ -1433,7 +1420,7 @@ func TestStoreAPIKeyAllowsConfiguredNoAffinityGroups(t *testing.T) {
 	other := newFastSchedulerTestAccount(3, HealthTierHealthy, 100, 1)
 	other.GroupIDs = []int64{30}
 
-	store := &Store{accounts: []*Account{primary, split, other}, maxConcurrency: 1}
+	store := (&Store{accounts: []*Account{primary, split, other}}).withMaxConcurrency(1)
 	store.rebuildAccountIndex()
 	store.SetAPIKeyAllowedGroups(1, []int64{10})
 	store.SetAPIKeyNoAffinityGroups(1, []int64{20})

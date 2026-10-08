@@ -50,9 +50,10 @@ type createAccountResponse struct {
 }
 
 type healthResponse struct {
-	Status    string `json:"status"`
-	Available int    `json:"available"`
-	Total     int    `json:"total"`
+	Status       string `json:"status"`
+	Available    int    `json:"available"`
+	Total        int    `json:"total"`
+	BuildVersion string `json:"build_version"`
 }
 
 type usageLogsResponse struct {

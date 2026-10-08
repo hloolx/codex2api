@@ -175,9 +175,11 @@ func codexTurnStateFromFrame(payload []byte) string {
 	return ""
 }
 
-// ObserveCodexTurnStateFrame records upstream state in the current trace.
-func ObserveCodexTurnStateFrame(ctx context.Context, payload []byte) {
-	if state := codexTurnStateFromFrame(payload); state != "" {
+// ObserveCodexTurnStateFrame records and returns upstream state in the current trace.
+func ObserveCodexTurnStateFrame(ctx context.Context, payload []byte) string {
+	state := codexTurnStateFromFrame(payload)
+	if state != "" {
 		noteUpstreamTurnState(ctx, state)
 	}
+	return state
 }

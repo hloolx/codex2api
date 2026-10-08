@@ -7,12 +7,12 @@ import (
 )
 
 // TestDefaultGrokModelIDsForAccountByAuthKind 守护两条通道目录不同这一实测事实：
-// OAuth 走 cli-chat-proxy，兜底当前旗舰 grok-4.6 / grok-4.5；API Key 走 xAI 公开 API，目录更宽。
+// OAuth 走 cli-chat-proxy，兜底当前旗舰 grok-4.7 / grok-4.6 / grok-4.5；API Key 走 xAI 公开 API，目录更宽。
 func TestDefaultGrokModelIDsForAccountByAuthKind(t *testing.T) {
 	oauth := &auth.Account{UpstreamType: auth.UpstreamGrok, RefreshToken: "rt"}
 	gotOAuth := DefaultGrokModelIDsForAccount(oauth)
-	if !modelIDInList("grok-4.6", gotOAuth) || !modelIDInList("grok-4.5", gotOAuth) {
-		t.Fatalf("OAuth 默认集 = %v, want grok-4.6 与 grok-4.5", gotOAuth)
+	if !modelIDInList("grok-4.7", gotOAuth) || !modelIDInList("grok-4.7-fast", gotOAuth) || !modelIDInList("grok-4.6", gotOAuth) || !modelIDInList("grok-4.5", gotOAuth) {
+		t.Fatalf("OAuth 默认集 = %v, want grok-4.7 / grok-4.7-fast / grok-4.6 / grok-4.5", gotOAuth)
 	}
 	for _, model := range []string{"grok-3", "grok-2", "grok-3-fast"} {
 		if modelIDInList(model, gotOAuth) {
@@ -28,8 +28,8 @@ func TestDefaultGrokModelIDsForAccountByAuthKind(t *testing.T) {
 	if len(got) <= len(gotOAuth) {
 		t.Fatalf("API Key 默认集应比 OAuth 宽, oauth=%v apiKey=%v", gotOAuth, got)
 	}
-	if !modelIDInList("grok-4.6", got) || !modelIDInList("grok-3", got) {
-		t.Fatalf("API Key 默认集应含 grok-4.6 与 grok-3, got %v", got)
+	if !modelIDInList("grok-4.7", got) || !modelIDInList("grok-4.7-fast", got) || !modelIDInList("grok-4.6", got) || !modelIDInList("grok-3", got) {
+		t.Fatalf("API Key 默认集应含 grok-4.7 / grok-4.7-fast / grok-4.6 与 grok-3, got %v", got)
 	}
 
 	// 空账号按 OAuth 处理：CLI 通道是更保守的一侧，宁可少放行也不要advertise 不存在的模型。
@@ -51,10 +51,39 @@ func TestRelayAccountSupportsModelHonoursAuthKind(t *testing.T) {
 	if !relayAccountSupportsModel(oauth, "grok-4.6") {
 		t.Fatalf("OAuth 账号应支持 grok-4.6")
 	}
-	for _, model := range []string{"grok-3", "grok-2", "grok-3-fast"} {
+	for _, model := range []string{"grok-4", "grok-3", "grok-2", "grok-3-fast"} {
 		if relayAccountSupportsModel(oauth, model) {
 			t.Errorf("OAuth 账号不应被放行到 %s（CLI 通道无此模型）", model)
 		}
+	}
+	declaredOld := &auth.Account{
+		UpstreamType: auth.UpstreamGrok,
+		RefreshToken: "rt",
+		Models:       []string{"grok-4", "grok-4.7"},
+	}
+	declaredOld.SetGrokRoutingState(auth.GrokRoutingState{Models: []auth.GrokModelRoute{
+		{ModelID: "grok-4", APIBackend: auth.GrokProtocolResponses},
+		{ModelID: "grok-4.7", APIBackend: auth.GrokProtocolResponses},
+	}})
+	if relayAccountSupportsModel(declaredOld, "grok-4") {
+		t.Fatal("OAuth 白名单或目录里的 grok-4 也不能调度")
+	}
+	if !relayAccountSupportsModel(declaredOld, "grok-4.7") {
+		t.Fatal("OAuth 仍应调度 grok-4.7")
+	}
+	narrowCatalog := &auth.Account{
+		UpstreamType: auth.UpstreamGrok,
+		RefreshToken: "rt",
+		Models:       []string{"grok-4.5", "grok-4.6", "grok-4.7", "grok-4.7-fast"},
+	}
+	narrowCatalog.SetGrokRoutingState(auth.GrokRoutingState{Models: []auth.GrokModelRoute{{ModelID: "grok-4.7", APIBackend: auth.GrokProtocolResponses}}})
+	for _, model := range []string{"grok-4.5", "grok-4.6", "grok-4.7", "grok-4.7-fast"} {
+		if !relayAccountSupportsModel(narrowCatalog, model) {
+			t.Fatalf("白名单里的 OAuth 预设模型 %s 应可调度", model)
+		}
+	}
+	if modelIDInList("grok-4", GrokVisibleModelIDsForAccount(declaredOld)) {
+		t.Fatal("OAuth 可见模型不应包含 grok-4")
 	}
 
 	apiKey := &auth.Account{UpstreamType: auth.UpstreamGrok, APIKey: "xai-key"}
@@ -78,8 +107,13 @@ func TestRelayAccountSupportsModelRespectsDeclaredWhitelist(t *testing.T) {
 		t.Fatalf("声明白名单后不应再补默认集放行 grok-4.5")
 	}
 	declared.SetGrokRoutingState(auth.GrokRoutingState{Models: []auth.GrokModelRoute{{ModelID: "grok-3", APIBackend: auth.GrokProtocolResponses}}})
-	if !relayAccountSupportsModel(declared, "grok-3") {
-		t.Fatalf("目录与声明同时命中时应放行 grok-3")
+	if relayAccountSupportsModel(declared, "grok-3") {
+		t.Fatal("OAuth 不调度 grok-4.5 以下的模型，即使目录和白名单都写了 grok-3")
+	}
+	declared.Models = []string{"grok-catalog-only"}
+	declared.SetGrokRoutingState(auth.GrokRoutingState{Models: []auth.GrokModelRoute{{ModelID: "grok-catalog-only", APIBackend: auth.GrokProtocolResponses}}})
+	if !relayAccountSupportsModel(declared, "grok-catalog-only") {
+		t.Fatal("目录与声明同时命中的非旧模型应放行")
 	}
 }
 

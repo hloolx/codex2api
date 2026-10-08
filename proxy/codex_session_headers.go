@@ -81,7 +81,8 @@ func ConvergedCodexSessionIdentity(account *auth.Account, downstreamHeaders http
 // ApplyCodexSessionHeaders 写出站会话标识头。
 //
 // fallbackSessionID 是网关自己的会话/缓存键（resolveUpstreamSessionID 的产出）；
-// 为空时整体跳过——既有行为就是"没有会话键就不发会话头"，这里不改变它。
+// 为空时旧模式整体跳过。会话身份收敛模式可以使用显式的客户端身份；
+// 该模式的 WS 连接池也按映射后的 session/thread 分区，不跨对话复用握手。
 //
 // legacyConversationID 只在 legacy 档生效：WS 握手历史上会连带发一个 Conversation_id，
 // HTTP 路径则显式删掉它。legacy 的契约是逐路径复原旧行为，所以这个差异由调用方声明，
@@ -95,11 +96,19 @@ func ApplyCodexSessionHeaders(outbound http.Header, account *auth.Account, fallb
 		return
 	}
 	fallbackSessionID = strings.TrimSpace(fallbackSessionID)
+	if fallbackSessionID == "" && account != nil && account.EffectiveCodexFingerprintMode() == auth.CodexFingerprintModeSingleMachineMultiWindow {
+		fallbackSessionID, _ = ConvergedCodexSessionIdentity(account, downstreamHeaders)
+	}
 	if fallbackSessionID == "" {
 		return
 	}
 
 	if codexSessionHeaderModeFromEnv() == codexSessionHeaderModeLegacy {
+		if account != nil && account.EffectiveCodexFingerprintMode() == auth.CodexFingerprintModeSingleMachineMultiWindow {
+			if aligned, _ := ConvergedCodexSessionIdentity(account, downstreamHeaders); aligned != "" {
+				fallbackSessionID = aligned
+			}
+		}
 		outbound.Set(codexLegacySessionIDHeader, fallbackSessionID)
 		if legacyConversationID {
 			outbound.Set(codexConversationIDHeader, fallbackSessionID)
@@ -120,9 +129,9 @@ func ApplyCodexSessionHeaders(outbound http.Header, account *auth.Account, fallb
 	}
 
 	// session-id 默认仍是网关自己的会话键：收敛不介入上游会话身份是既有约束，
-	// 只有显式开启对齐才改用收敛值（见 codexSessionHeaderAlignsConverged）。
+	// 只有显式开启对齐或选择会话身份收敛模式才改用收敛值。
 	sessionID := fallbackSessionID
-	if convergedSessionID != "" && codexSessionHeaderAlignsConverged() {
+	if convergedSessionID != "" && (codexSessionHeaderAlignsConverged() || account.EffectiveCodexFingerprintMode() == auth.CodexFingerprintModeSingleMachineMultiWindow) {
 		sessionID = convergedSessionID
 	}
 

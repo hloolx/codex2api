@@ -76,6 +76,11 @@ func (h *Handler) GetPublicAPIKeyUsageSummary(c *gin.Context) {
 		writeError(c, http.StatusBadRequest, err.Error())
 		return
 	}
+	logFilter, err := parsePublicAPIKeyUsageLogFilter(c.Query("model"), c.Query("endpoint"), c.Query("status"), c.Query("stream"), c.Query("channel"))
+	if err != nil {
+		writeError(c, http.StatusBadRequest, err.Error())
+		return
+	}
 
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 8*time.Second)
 	defer cancel()
@@ -91,7 +96,7 @@ func (h *Handler) GetPublicAPIKeyUsageSummary(c *gin.Context) {
 		return
 	}
 
-	report, err := h.db.GetAPIKeySelfUsageReport(ctx, row.ID, rangeStart, rangeEnd, logPage, logPageSize)
+	report, err := h.db.GetAPIKeySelfUsageReportFiltered(ctx, row.ID, rangeStart, rangeEnd, logPage, logPageSize, logFilter)
 	if err != nil {
 		writeInternalError(c, err)
 		return
@@ -171,6 +176,37 @@ func parsePublicAPIKeyUsageLogPagination(pageRaw, pageSizeRaw string) (int, int,
 	}
 
 	return page, pageSize, nil
+}
+
+const publicAPIKeyUsageMaxFilterLen = 128
+
+func parsePublicAPIKeyUsageLogFilter(model, endpoint, status, stream, channel string) (database.APIKeySelfLogFilter, error) {
+	filter := database.APIKeySelfLogFilter{
+		Model:    strings.TrimSpace(model),
+		Endpoint: strings.TrimSpace(endpoint),
+		Status:   strings.ToLower(strings.TrimSpace(status)),
+		Stream:   strings.ToLower(strings.TrimSpace(stream)),
+		Channel:  strings.ToLower(strings.TrimSpace(channel)),
+	}
+	if len(filter.Model) > publicAPIKeyUsageMaxFilterLen || len(filter.Endpoint) > publicAPIKeyUsageMaxFilterLen {
+		return database.APIKeySelfLogFilter{}, errors.New("model / endpoint 参数过长")
+	}
+	switch filter.Status {
+	case "", "success", "error", "4xx", "5xx", "429":
+	default:
+		return database.APIKeySelfLogFilter{}, errors.New("status 参数仅支持 success、error、4xx、5xx、429")
+	}
+	switch filter.Stream {
+	case "", "stream", "sync":
+	default:
+		return database.APIKeySelfLogFilter{}, errors.New("stream 参数仅支持 stream、sync")
+	}
+	switch filter.Channel {
+	case "", "codex", "grok", "antigravity", "claude":
+	default:
+		return database.APIKeySelfLogFilter{}, errors.New("channel 参数仅支持 codex、grok、antigravity、claude")
+	}
+	return filter, nil
 }
 
 func parsePublicAPIKeyUsageRange(raw string) (string, time.Time, time.Time, error) {

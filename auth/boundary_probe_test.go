@@ -118,7 +118,7 @@ func TestWakeBoundaryProbeOnlyNudgesForEarlier(t *testing.T) {
 	}
 
 	// 模拟已武装到 +30s。
-	s.armedBoundaryAt = now.Add(30 * time.Second).UnixNano()
+	s.armedBoundaryAt.Store(now.Add(30 * time.Second).UnixNano())
 
 	// 更晚的边界(+2min) → 不打扰。
 	s.WakeBoundaryProbe(now.Add(2 * time.Minute))
@@ -173,8 +173,8 @@ func TestArmNextBoundaryProbeArmsTimer(t *testing.T) {
 
 	s.armNextBoundaryProbe(timer)
 
-	if s.armedBoundaryAt != s.accounts[0].Reset5hAt.UnixNano() {
-		t.Fatalf("armedBoundaryAt=%d，want %d（最近边界）", s.armedBoundaryAt, s.accounts[0].Reset5hAt.UnixNano())
+	if s.armedBoundaryAt.Load() != s.accounts[0].Reset5hAt.UnixNano() {
+		t.Fatalf("armedBoundaryAt=%d，want %d（最近边界）", s.armedBoundaryAt.Load(), s.accounts[0].Reset5hAt.UnixNano())
 	}
 
 	// 定时器应在最近边界(+滞后 probeBoundaryLag)后触发，这里给足余量。
@@ -189,8 +189,8 @@ func TestArmNextBoundaryProbeArmsTimer(t *testing.T) {
 	s.publishAccountSnapshot(s.accounts)
 	timer2 := time.NewTimer(time.Hour)
 	s.armNextBoundaryProbe(timer2)
-	if s.armedBoundaryAt != 0 {
-		t.Fatalf("armedBoundaryAt=%d，want 0（无待处理边界）", s.armedBoundaryAt)
+	if s.armedBoundaryAt.Load() != 0 {
+		t.Fatalf("armedBoundaryAt=%d，want 0（无待处理边界）", s.armedBoundaryAt.Load())
 	}
 	select {
 	case <-timer2.C:

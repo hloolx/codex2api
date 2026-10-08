@@ -4,7 +4,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
-	"sync/atomic"
 	"testing"
 
 	"github.com/codex2api/database"
@@ -41,7 +40,7 @@ func TestAPIKeyConcurrencyLimiterAcquireRelease(t *testing.T) {
 	if counter == nil {
 		t.Fatal("counter was removed; keeping it avoids orphan-counter acquire races")
 	}
-	if got := atomic.LoadInt64(&counter.inflight); got != 0 {
+	if got := counter.inflight.Load(); got != 0 {
 		t.Fatalf("inflight after all releases = %d, want 0", got)
 	}
 }

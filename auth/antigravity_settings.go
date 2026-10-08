@@ -8,9 +8,9 @@ import (
 	"sync/atomic"
 )
 
-// Antigravity 渠道级设置（system_settings.antigravity_config 列）。目前只有模型
-// 重定向：下游请求不带思考强度后缀的逻辑模型（如 gemini-3.8-flash）时，自动按配置
-// 落到某个固定档位（如 gemini-3.8-flash-high）。
+// Antigravity 渠道级设置（system_settings.antigravity_config 列）。包含模型重定向
+// （下游请求不带思考强度后缀的逻辑模型如 gemini-3.8-flash 时，自动按配置落到某个
+// 固定档位如 gemini-3.8-flash-high）和思考内容下发开关。
 
 // AntigravityModelRedirectMaxEntries 限制重定向条目数，避免无界 JSON。
 const AntigravityModelRedirectMaxEntries = 64
@@ -22,6 +22,9 @@ type AntigravitySettings struct {
 	// RedirectOverridesEffort 为 true 时，即使请求自带 reasoning.effort 也按重定向
 	// 走；默认只在请求没有指定思考强度时生效。
 	RedirectOverridesEffort bool `json:"redirect_overrides_effort,omitempty"`
+	// ExposeThoughts 为 true 时，OAuth 账号的 Gemini 请求带 includeThoughts，并把
+	// 上游 thought 片段作为 reasoning 输出下发；默认关闭，保持只下发正文。
+	ExposeThoughts bool `json:"expose_thoughts,omitempty"`
 }
 
 var configuredAntigravitySettings atomic.Value // AntigravitySettings
@@ -34,7 +37,7 @@ func SetConfiguredAntigravitySettings(settings AntigravitySettings) {
 // ConfiguredAntigravitySettings 返回当前生效设置的副本。
 func ConfiguredAntigravitySettings() AntigravitySettings {
 	v, _ := configuredAntigravitySettings.Load().(AntigravitySettings)
-	out := AntigravitySettings{RedirectOverridesEffort: v.RedirectOverridesEffort}
+	out := AntigravitySettings{RedirectOverridesEffort: v.RedirectOverridesEffort, ExposeThoughts: v.ExposeThoughts}
 	if len(v.ModelRedirects) > 0 {
 		out.ModelRedirects = make(map[string]string, len(v.ModelRedirects))
 		for key, value := range v.ModelRedirects {
@@ -59,6 +62,12 @@ func AntigravityRedirectOverridesEffort() bool {
 	return v.RedirectOverridesEffort
 }
 
+// AntigravityExposeThoughts 报告是否向下游下发 Gemini 思考内容。
+func AntigravityExposeThoughts() bool {
+	v, _ := configuredAntigravitySettings.Load().(AntigravitySettings)
+	return v.ExposeThoughts
+}
+
 // ParseAntigravitySettings 解析 antigravity_config JSON。空串/`{}` 表示未配置；
 // 解析失败返回错误而不是静默清空，由调用方决定回落。
 func ParseAntigravitySettings(raw string) (AntigravitySettings, error) {
@@ -79,7 +88,7 @@ func EncodeAntigravitySettings(settings AntigravitySettings) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if len(normalized.ModelRedirects) == 0 && !normalized.RedirectOverridesEffort {
+	if len(normalized.ModelRedirects) == 0 && !normalized.RedirectOverridesEffort && !normalized.ExposeThoughts {
 		return "{}", nil
 	}
 	encoded, err := json.Marshal(normalized)
@@ -92,7 +101,7 @@ func EncodeAntigravitySettings(settings AntigravitySettings) (string, error) {
 // NormalizeAntigravitySettings 去空白、统一小写、丢弃空值条目并限制条目数。
 // 目标模型是否真是该逻辑模型的档位由 admin 层结合模型目录校验（auth 不依赖 proxy）。
 func NormalizeAntigravitySettings(settings AntigravitySettings) (AntigravitySettings, error) {
-	out := AntigravitySettings{RedirectOverridesEffort: settings.RedirectOverridesEffort}
+	out := AntigravitySettings{RedirectOverridesEffort: settings.RedirectOverridesEffort, ExposeThoughts: settings.ExposeThoughts}
 	if len(settings.ModelRedirects) == 0 {
 		return out, nil
 	}

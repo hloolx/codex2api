@@ -60,7 +60,9 @@ func (p subscriptionHeaderProfile) String() string {
 	return "codex"
 }
 
-func applySubscriptionHeaders(req *http.Request, profile subscriptionHeaderProfile) {
+// applySubscriptionHeaders 写入订阅端点的身份头。浏览器形态是专为绕过网页端挑战的
+// 回退，不受统一身份开关影响；Codex 形态与其他维护请求同源（issue #774）。
+func applySubscriptionHeaders(req *http.Request, account *auth.Account, profile subscriptionHeaderProfile) {
 	req.Header.Set("Accept", "application/json")
 	switch profile {
 	case subscriptionHeadersBrowser:
@@ -68,8 +70,7 @@ func applySubscriptionHeaders(req *http.Request, profile subscriptionHeaderProfi
 		req.Header.Set("Referer", "https://chatgpt.com/")
 		req.Header.Set("User-Agent", subscriptionsBrowserUserAgent)
 	default:
-		req.Header.Set("User-Agent", MinimalCodexCLIUserAgentForHeaders())
-		req.Header.Set("Originator", Originator)
+		ResolveCodexMaintenanceIdentity(account, nil).Apply(req.Header)
 	}
 }
 
@@ -228,7 +229,7 @@ func queryChatGPTSubscriptionWith(ctx context.Context, account *auth.Account, pr
 		return nil, fmt.Errorf("build subscriptions request: %w", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+accessToken)
-	applySubscriptionHeaders(req, profile)
+	applySubscriptionHeaders(req, account, profile)
 	if viaResin {
 		req.Header.Set("X-Resin-Account", ResinAccountID(account))
 	}

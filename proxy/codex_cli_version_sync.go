@@ -20,8 +20,8 @@ const CodexReleasesLatestURL = "https://api.github.com/repos/openai/codex/releas
 // codexReleasesLatestURLForTest 允许测试替换默认 URL。生产代码不要赋值。
 var codexReleasesLatestURLForTest = ""
 
-// CodexCLIVersionSyncDisabled 报告是否通过环境变量关闭了 CLI 版本自动同步。
-// CODEX_DISABLE_CLI_VERSION_SYNC=1（或 true）时关闭后台定时与启动同步；
+// CodexCLIVersionSyncDisabled 报告是否通过兼容环境变量关闭客户端版本自动同步。
+// CODEX_DISABLE_CLI_VERSION_SYNC=1（或 true）时关闭全部客户端的后台定时与启动同步；
 // 管理端「立即同步」按钮不受影响。
 func CodexCLIVersionSyncDisabled() bool {
 	switch strings.ToLower(strings.TrimSpace(os.Getenv("CODEX_DISABLE_CLI_VERSION_SYNC"))) {
@@ -63,7 +63,8 @@ func FetchLatestCodexCLIVersion(ctx context.Context, proxyURL string) (string, e
 	// GitHub 访问设置（issue #522）：token 提升 API 限流配额，专用代理与全局代理解耦。
 	ApplyGithubAuth(req)
 
-	client := &http.Client{Transport: newCodexStandardTransport(GithubProxyOrDefault(endpoint, proxyURL)), Timeout: 20 * time.Second}
+	client, closeClient := newVersionSyncClient(endpoint, GithubProxyOrDefault(endpoint, proxyURL), 20*time.Second)
+	defer closeClient()
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("codex releases request: %w", err)
@@ -128,6 +129,11 @@ func SyncCodexCLIVersion(ctx context.Context, db *database.DB, proxyURL string) 
 	if err != nil {
 		return result, err
 	}
+	return applyCodexCLIVersion(ctx, db, result, fetched)
+}
+
+// applyCodexCLIVersion 是 SyncCodexCLIVersion 拉取之后的持久化部分,供并发拉取后顺序落库复用。
+func applyCodexCLIVersion(ctx context.Context, db *database.DB, result *CodexCLIVersionSyncResult, fetched string) (*CodexCLIVersionSyncResult, error) {
 	result.FetchedVersion = fetched
 
 	// 仅当拉取值高于内置常量时才有意义（否则运行时会自动回落内置常量）。
@@ -142,6 +148,14 @@ func SyncCodexCLIVersion(ctx context.Context, db *database.DB, proxyURL string) 
 	}
 	if settings == nil {
 		settings = &database.SystemSettings{}
+	}
+	if cmp, ok := compareCodexClientVersions(fetched, settings.CodexSyncedCLIVersion); ok && cmp <= 0 {
+		UpdateRuntimeSettings(func(runtime RuntimeSettings) RuntimeSettings {
+			runtime.CodexSyncedCLIVersion = settings.CodexSyncedCLIVersion
+			return runtime
+		})
+		result.EffectiveVersion = effectiveLatestCodexCLIVersion()
+		return result, nil
 	}
 	if strings.TrimSpace(settings.CodexSyncedCLIVersion) == fetched {
 		result.EffectiveVersion = effectiveLatestCodexCLIVersion()
@@ -161,16 +175,22 @@ func SyncCodexCLIVersion(ctx context.Context, db *database.DB, proxyURL string) 
 	return result, nil
 }
 
-// StartCodexCLIVersionSync 在后台按系统设置的间隔周期同步 Codex CLI 版本，并在启动时先同步一次。
+// StartCodexCLIVersionSync 沿用旧入口，在后台同步 CLI、Desktop 和 VSCode 版本。
 // 开关(CodexCLIVersionSyncEnabled)与间隔(CodexCLIVersionSyncIntervalHours)在每个周期读取；
 // 新间隔从下一轮计时生效，无需重启。环境变量 CODEX_DISABLE_CLI_VERSION_SYNC 为硬开关，优先级最高。
 // proxyResolver 允许调用方注入出站代理（可为 nil）。
 func StartCodexCLIVersionSync(ctx context.Context, db *database.DB, proxyResolver func() string) {
-	if db == nil || CodexCLIVersionSyncDisabled() {
-		return
-	}
 	if ctx == nil {
 		ctx = context.Background()
+	}
+	if db == nil {
+		return
+	}
+	if err := LoadCodexClientVersionCache(ctx, db); err != nil {
+		fmt.Printf("[codex-client-version-sync] 缓存加载失败: %v\n", err)
+	}
+	if CodexCLIVersionSyncDisabled() {
+		return
 	}
 	resolveProxy := func() string {
 		if proxyResolver == nil {
@@ -180,12 +200,21 @@ func StartCodexCLIVersionSync(ctx context.Context, db *database.DB, proxyResolve
 	}
 
 	runOnce := func(runCtx context.Context) {
-		syncCtx, cancel := context.WithTimeout(runCtx, 30*time.Second)
+		syncCtx, cancel := context.WithTimeout(runCtx, 15*time.Minute)
 		defer cancel()
-		if res, err := SyncCodexCLIVersion(syncCtx, db, resolveProxy()); err != nil {
-			fmt.Printf("[codex-cli-version-sync] 同步失败（不影响服务）: %v\n", err)
-		} else if res.Updated {
-			fmt.Printf("[codex-cli-version-sync] 模拟版本已更新至 %s\n", res.EffectiveVersion)
+		if res, err := SyncCodexClientVersions(syncCtx, db, resolveProxy()); err != nil {
+			fmt.Printf("[codex-client-version-sync] 同步失败: %v\n", err)
+		} else {
+			for kind, item := range map[string]CodexAppBuildSyncResult{
+				"cli": res.CLI, "desktop-mac": res.DesktopMac,
+				"desktop-windows": res.DesktopWindows, "vscode": res.VSCode,
+			} {
+				if item.Error != "" {
+					fmt.Printf("[codex-client-version-sync] %s 同步失败: %s\n", kind, item.Error)
+				} else if item.Updated {
+					fmt.Printf("[codex-client-version-sync] %s 已更新至 %s\n", kind, item.EffectiveVersion)
+				}
+			}
 		}
 	}
 

@@ -3,7 +3,6 @@ package auth
 import (
 	"context"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -142,8 +141,8 @@ func TestProxyPoolSelectLeastConnections(t *testing.T) {
 		t.Fatal("Failed to find proxy entries")
 	}
 
-	atomic.StoreInt64(&entry1.ActiveConns, 10)
-	atomic.StoreInt64(&entry2.ActiveConns, 1)
+	entry1.ActiveConns.Store(10)
+	entry2.ActiveConns.Store(1)
 
 	// 应该选择连接少的
 	selected := pool.Select()

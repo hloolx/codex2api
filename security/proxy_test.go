@@ -69,9 +69,9 @@ func TestParseProxyURLSpecialCharPassword(t *testing.T) {
 func TestParseProxyURLRejectsInvalid(t *testing.T) {
 	cases := []string{
 		"",
-		"1.2.3.4:1080",                    // 缺 scheme
-		"ftp://1.2.3.4:1080",              // 不支持的 scheme
-		"socks4://1.2.3.4:1080",           // 不支持的 scheme
+		"1.2.3.4:1080",                     // 缺 scheme
+		"ftp://1.2.3.4:1080",               // 不支持的 scheme
+		"socks4://1.2.3.4:1080",            // 不支持的 scheme
 		"socks5://user:pass@1.2.3.4:99999", // 端口越界
 		"socks5://",                        // 缺主机
 	}

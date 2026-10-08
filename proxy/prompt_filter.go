@@ -434,6 +434,17 @@ func (h *Handler) buildPromptFilterLogInput(auditContext promptFilterAuditContex
 		input.MatchContext == "" && envelope != nil && len(envelope.AdapterUnclassifiedTypes) > 0 {
 		input.MatchContext = "unclassified_types: " + strings.Join(envelope.AdapterUnclassifiedTypes, ", ")
 	}
+	// A well-formed Codex auto-review request from a model outside
+	// approval_review_models is enforced as ordinary input. Name the model so
+	// operators can see why the reviewer was blocked and decide whether to
+	// trust it.
+	if decision != nil && decision.ApprovalReviewModelUntrusted != "" {
+		note := "approval_review_model_untrusted: " + decision.ApprovalReviewModelUntrusted
+		if input.MatchContext != "" {
+			note += "\n" + input.MatchContext
+		}
+		input.MatchContext = promptfilter.RedactedPreview(note, promptFilterMatchContextMaxRunes)
+	}
 	// 被拦截（block）的请求仅记录脱敏后的检查文本预览，便于排查触发原因，
 	// 同时避免把 Authorization/API Key/token 等敏感值持久化到日志。
 	if verdict.Action == promptfilter.ActionBlock {

@@ -409,9 +409,17 @@ func TestContinuousRetryAffinityTimeoutCleanupPreservesOnlyExistingSameAccount(t
 			if !bindContinuousRetrySessionAffinity(ctx, store, affinityKey, current, "") {
 				t.Fatal("affinity bind was rejected before deadline")
 			}
+			// The timer cancels ctx before it runs the timeout cleanups, so
+			// ctx.Done() alone races the affinity unbind. Cleanups run in
+			// registration order; a sentinel registered after the bind fires
+			// only once the unbind has completed.
+			cleaned := make(chan struct{})
+			if !withContinuousRetryDeadlinePendingCleanup(ctx, func() {}, func() { close(cleaned) }) {
+				t.Fatal("sentinel cleanup was rejected before deadline")
+			}
 			deadline.Activate()
 			select {
-			case <-ctx.Done():
+			case <-cleaned:
 			case <-time.After(500 * time.Millisecond):
 				t.Fatal("deadline did not fire")
 			}
@@ -561,7 +569,7 @@ func TestResponsesCompactContinuousRetryDeadlineReturnsLatestFailureAndReleasesS
 	if recorder.Code != http.StatusServiceUnavailable || recorder.Body.String() != string(lastBody) {
 		t.Fatalf("response = %d %q, want exact latest upstream failure", recorder.Code, recorder.Body.String())
 	}
-	if got := atomic.LoadInt64(&account.ActiveRequests); got != 0 {
+	if got := account.ActiveRequests.Load(); got != 0 {
 		t.Fatalf("ActiveRequests = %d, want 0", got)
 	}
 	if account.FailureStreak != 1 {
@@ -682,7 +690,7 @@ func TestGrokImagesContinuousRetryDeadlineCancelsActiveBodyRead(t *testing.T) {
 	if recorder.Code != http.StatusServiceUnavailable || recorder.Body.String() != string(lastBody) {
 		t.Fatalf("response = %d %q, want exact latest upstream failure", recorder.Code, recorder.Body.String())
 	}
-	if got := atomic.LoadInt64(&account.ActiveRequests); got != 0 {
+	if got := account.ActiveRequests.Load(); got != 0 {
 		t.Fatalf("ActiveRequests = %d, want 0", got)
 	}
 }
@@ -787,13 +795,13 @@ func TestResponsesWebSocketContinuousRetryDeadlineWritesOneErrorAndCloses1013(t 
 		t.Fatal("continuous retry did not reach the active websocket stream read")
 	}
 	account := <-activeAccount
-	if got := atomic.LoadInt64(&handler.apiKeyConcurrencyLimiter().counter(apiKeyID).inflight); got != 1 {
+	if got := handler.apiKeyConcurrencyLimiter().counter(apiKeyID).inflight.Load(); got != 1 {
 		t.Fatalf("API key inflight during websocket retry = %d, want 1", got)
 	}
 	if got := APIKeyScopeInflight(apiKeyID, database.APIKeyScopeTypeAccount, 2); got != 1 {
 		t.Fatalf("scope inflight during websocket retry = %d, want 1", got)
 	}
-	if got := atomic.LoadInt64(&account.ActiveRequests); got != 1 {
+	if got := account.ActiveRequests.Load(); got != 1 {
 		t.Fatalf("ActiveRequests during websocket retry = %d, want 1", got)
 	}
 
@@ -823,15 +831,15 @@ func TestResponsesWebSocketContinuousRetryDeadlineWritesOneErrorAndCloses1013(t 
 	}
 
 	releaseDeadline := time.Now().Add(500 * time.Millisecond)
-	for (atomic.LoadInt64(&accounts[0].ActiveRequests) != 0 || atomic.LoadInt64(&accounts[1].ActiveRequests) != 0) && time.Now().Before(releaseDeadline) {
+	for (accounts[0].ActiveRequests.Load() != 0 || accounts[1].ActiveRequests.Load() != 0) && time.Now().Before(releaseDeadline) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	for _, releasedAccount := range accounts {
-		if got := atomic.LoadInt64(&releasedAccount.ActiveRequests); got != 0 {
+		if got := releasedAccount.ActiveRequests.Load(); got != 0 {
 			t.Fatalf("account %d ActiveRequests after websocket deadline = %d, want 0", releasedAccount.ID(), got)
 		}
 	}
-	if got := atomic.LoadInt64(&handler.apiKeyConcurrencyLimiter().counter(apiKeyID).inflight); got != 0 {
+	if got := handler.apiKeyConcurrencyLimiter().counter(apiKeyID).inflight.Load(); got != 0 {
 		t.Fatalf("API key inflight after websocket deadline = %d, want 0", got)
 	}
 	if got := APIKeyScopeInflight(apiKeyID, database.APIKeyScopeTypeAccount, 2); got != 0 {

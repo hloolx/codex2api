@@ -46,7 +46,14 @@ export interface QualityTestJob {
   input_tokens?: number
   output_tokens?: number
   reasoning_tokens?: number
+  timeout_ms?: number
+  // interrupted: the upstream stream/transport broke before a terminal event (status is error).
+  interrupted?: boolean
+  retries?: number
 }
+
+export const QUALITY_TEST_TIMEOUT_MINUTES = [10, 20, 30]
+export const QUALITY_TEST_DEFAULT_TIMEOUT_MINUTES = 20
 
 export interface QualityTestPrompt {
   id: number
@@ -92,6 +99,12 @@ export function qualityTestFilterQuery(page: number, filter: QualityTestJobsFilt
 
 export function isQualityTestActive(job?: Pick<QualityTestJob, 'status'> | null): boolean {
   return job?.status === 'running' || job?.status === 'cancelling'
+}
+
+// Status label key under qualityTest.status; a broken upstream stream is told apart from a rejection.
+export function qualityTestStatusKey(job?: Pick<QualityTestJob, 'status' | 'interrupted'> | null): string {
+  if (!job) return 'idle'
+  return job.status === 'error' && job.interrupted ? 'streamInterrupted' : job.status
 }
 
 export function qualityTestPlanTone(plan: string): string {

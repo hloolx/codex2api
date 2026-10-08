@@ -495,3 +495,90 @@ func TestMarshalGrokExportEntryFormatting(t *testing.T) {
 		t.Errorf("键未按字母序排列: %s", encoded)
 	}
 }
+
+func TestGrokCLIAuthJSONUsesScopedCLILayout(t *testing.T) {
+	file, err := grokCLIAuthJSONFromRow(grokOAuthRow(), true)
+	if err != nil {
+		t.Fatalf("生成失败: %v", err)
+	}
+	entry, ok := file["https://auth.x.ai::b1a00492-073a-47ea-816f-4c329264a828"]
+	if !ok || len(file) != 1 {
+		t.Fatalf("外层 key 应为 <issuer>::<client_id>，得到 %v", file)
+	}
+	if entry.Key != "eyJhdCI.payload.sig" || entry.AuthMode != "oidc" || entry.RefreshToken != "rt-abc123" {
+		t.Errorf("key/auth_mode/refresh_token 不符: %+v", entry)
+	}
+	if entry.UserID != "a7f5ab5b-8384-4a04-93d8-f55f55403b4e" || entry.PrincipalID != "84ac4dd3-35d6-451c-84b6-019ad7419b41" || entry.PrincipalType != "User" {
+		t.Errorf("身份字段不符: %+v", entry)
+	}
+	if entry.OIDCIssuer != "https://auth.x.ai" || entry.OIDCClientID != "b1a00492-073a-47ea-816f-4c329264a828" {
+		t.Errorf("OIDC 字段不符: %+v", entry)
+	}
+	if !strings.HasSuffix(entry.ExpiresAt, "Z") || grokParseExportTime(entry.ExpiresAt).IsZero() {
+		t.Errorf("expires_at 应为 UTC RFC3339: %q", entry.ExpiresAt)
+	}
+
+	encoded, err := json.Marshal(file)
+	if err != nil {
+		t.Fatalf("序列化失败: %v", err)
+	}
+	for _, forbidden := range []string{"access_token", "billing", "plan_type", "base_url", "id_token"} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Errorf("CLI auth.json 不应含 %q: %s", forbidden, encoded)
+		}
+	}
+	creds, err := auth.ParseGrokAuthJSON(encoded)
+	if err != nil || len(creds) != 1 {
+		t.Fatalf("生成的文件应能被导入器解回: %v %s", err, encoded)
+	}
+	if creds[0].AccessToken != "eyJhdCI.payload.sig" || creds[0].RefreshToken != "rt-abc123" || creds[0].ClientID != "b1a00492-073a-47ea-816f-4c329264a828" {
+		t.Errorf("回导凭据不符: %+v", creds[0])
+	}
+}
+
+func TestGrokCLIAuthJSONAccessTokenOnlyOmitsRefreshToken(t *testing.T) {
+	row := grokOAuthRow()
+	delete(row.Credentials, "grok_client_id")
+	delete(row.Credentials, "grok_oidc_issuer")
+	delete(row.Credentials, "grok_principal_type")
+	delete(row.Credentials, "grok_principal_id")
+	file, err := grokCLIAuthJSONFromRow(row, false)
+	if err != nil {
+		t.Fatalf("生成失败: %v", err)
+	}
+	entry, ok := file[auth.GrokDefaultOIDCIssuer+"::"+auth.GrokDefaultOAuthClientID]
+	if !ok {
+		t.Fatalf("缺失 OIDC 参数时应回落默认 issuer/client_id: %v", file)
+	}
+	if entry.RefreshToken != "" {
+		t.Fatalf("仅 access token 模式不得带出 refresh_token")
+	}
+	encoded, _ := json.Marshal(file)
+	if strings.Contains(string(encoded), "rt-abc123") || strings.Contains(string(encoded), "refresh_token") {
+		t.Fatalf("仅 access token 模式输出含 refresh token: %s", encoded)
+	}
+	if entry.PrincipalID != entry.UserID || entry.PrincipalType != "User" {
+		t.Errorf("principal 缺失时应回落为个人用户: %+v", entry)
+	}
+}
+
+func TestGrokCLIAuthJSONRejectsUnsupportedAccounts(t *testing.T) {
+	apiKeyRow := &database.AccountRow{Platform: "xai", Credentials: map[string]interface{}{
+		"upstream_type": auth.UpstreamGrok, "api_key": "xai-key",
+	}}
+	if _, err := grokCLIAuthJSONFromRow(apiKeyRow, false); err == nil {
+		t.Fatal("API Key 账号不应生成 OAuth auth.json")
+	}
+	noRefresh := grokOAuthRow()
+	delete(noRefresh.Credentials, "refresh_token")
+	if _, err := grokCLIAuthJSONFromRow(noRefresh, true); err == nil {
+		t.Fatal("缺 refresh_token 时完整模式应报错")
+	}
+	if _, err := grokCLIAuthJSONFromRow(noRefresh, false); err != nil {
+		t.Fatalf("缺 refresh_token 时仍应能生成仅 access token 文件: %v", err)
+	}
+	codexRow := &database.AccountRow{Credentials: map[string]interface{}{"access_token": "at", "refresh_token": "rt"}}
+	if _, err := grokCLIAuthJSONFromRow(codexRow, true); err != errGrokAccountRequired {
+		t.Fatalf("非 Grok 账号应返回 errGrokAccountRequired，得到 %v", err)
+	}
+}

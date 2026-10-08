@@ -2,7 +2,6 @@ package auth
 
 import (
 	"context"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -20,13 +19,12 @@ func requireSessionBinding(t *testing.T, store *Store, key string, accountID int
 }
 
 func TestNextForSessionPrefersBoundAccountAndProxy(t *testing.T) {
-	store := &Store{
+	store := (&Store{
 		accounts: []*Account{
 			{DBID: 1, AccessToken: "tok-1"},
 			{DBID: 2, AccessToken: "tok-2", ProxyURL: "http://proxy-2"},
 		},
-		maxConcurrency: 2,
-	}
+	}).withMaxConcurrency(2)
 	store.bindSessionAffinity("session-1", store.accounts[1], "http://proxy-2")
 
 	acc, proxyURL := store.NextForSession("session-1", 0, nil)
@@ -50,14 +48,13 @@ func TestNextForSessionUsesCachedAffinityWhenLocalBindingMissing(t *testing.T) {
 	}, time.Hour); err != nil {
 		t.Fatalf("SetSessionAffinity: %v", err)
 	}
-	store := &Store{
+	store := (&Store{
 		accounts: []*Account{
 			{DBID: 1, AccessToken: "tok-1"},
 			{DBID: 2, AccessToken: "tok-2", ProxyURL: "http://proxy-2"},
 		},
-		maxConcurrency: 2,
-		tokenCache:     tokenCache,
-	}
+		tokenCache: tokenCache,
+	}).withMaxConcurrency(2)
 
 	acc, proxyURL := store.NextForSession("session-redis", 0, nil)
 	if acc == nil {
@@ -73,14 +70,13 @@ func TestNextForSessionUsesCachedAffinityWhenLocalBindingMissing(t *testing.T) {
 
 func TestNextForSessionRejectsRemovedPoolProxyAffinity(t *testing.T) {
 	const removedProxy = "http://removed.example:8080"
-	store := &Store{
+	store := (&Store{
 		accounts: []*Account{
 			{DBID: 1, AccessToken: "tok-1"},
 		},
-		maxConcurrency:   2,
 		proxyPoolEnabled: true,
 		proxyPool:        []string{removedProxy},
-	}
+	}).withMaxConcurrency(2)
 	store.bindSessionAffinity("removed-local", store.accounts[0], removedProxy)
 
 	store.mu.Lock()
@@ -113,15 +109,14 @@ func TestNextForSessionRejectsRemovedCachedProxyAffinity(t *testing.T) {
 	}, time.Hour); err != nil {
 		t.Fatalf("SetSessionAffinity: %v", err)
 	}
-	store := &Store{
+	store := (&Store{
 		accounts: []*Account{
 			{DBID: 1, AccessToken: "tok-1"},
 		},
-		maxConcurrency:   2,
 		tokenCache:       tokenCache,
 		proxyPoolEnabled: true,
 		proxyPool:        []string{"http://replacement.example:8080"},
-	}
+	}).withMaxConcurrency(2)
 
 	acc, proxyURL := store.NextForSession("removed-cached", 0, nil)
 	if acc == nil {
@@ -142,15 +137,14 @@ func TestBindSessionAffinityRejectsProxyRemovedBeforeLateBind(t *testing.T) {
 	const removedProxy = "http://removed.example:8080"
 	tokenCache := cache.NewMemory(1)
 	defer tokenCache.Close()
-	store := &Store{
+	store := (&Store{
 		accounts: []*Account{
 			{DBID: 1, AccessToken: "tok-1"},
 		},
-		maxConcurrency:   2,
 		tokenCache:       tokenCache,
 		proxyPoolEnabled: true,
 		proxyPool:        []string{"http://replacement.example:8080"},
-	}
+	}).withMaxConcurrency(2)
 
 	store.BindSessionAffinity("late-bind", store.accounts[0], removedProxy)
 
@@ -169,14 +163,13 @@ func TestBindSessionAffinityRejectsProxyRemovedBeforeLateBind(t *testing.T) {
 
 func TestNextForSessionKeepsAffinityForEnabledPoolProxy(t *testing.T) {
 	const enabledProxy = "http://enabled.example:8080"
-	store := &Store{
+	store := (&Store{
 		accounts: []*Account{
 			{DBID: 1, AccessToken: "tok-1"},
 		},
-		maxConcurrency:   2,
 		proxyPoolEnabled: true,
 		proxyPool:        []string{enabledProxy},
-	}
+	}).withMaxConcurrency(2)
 	store.BindSessionAffinity("enabled-proxy", store.accounts[0], enabledProxy)
 
 	acc, proxyURL := store.NextForSession("enabled-proxy", 0, nil)
@@ -212,10 +205,9 @@ func TestNextForContinuationPreservesBoundedAffinity(t *testing.T) {
 	bound := &Account{DBID: 1, AccessToken: "tok-1"}
 	fallback := &Account{DBID: 2, AccessToken: "tok-2"}
 	fallback.SetSchedulerPriority(20)
-	store := &Store{
-		accounts:       []*Account{bound, fallback},
-		maxConcurrency: 2,
-	}
+	store := (&Store{
+		accounts: []*Account{bound, fallback},
+	}).withMaxConcurrency(2)
 	store.bindSessionAffinity("conversation-1", bound, "")
 
 	store.sessionMu.Lock()
@@ -254,10 +246,9 @@ func TestBoundedAffinityKeepsActiveBindingRegardlessOfAgeAndCount(t *testing.T) 
 	bound := &Account{DBID: 1, AccessToken: "tok-1"}
 	other := &Account{DBID: 2, AccessToken: "tok-2"}
 	other.SetSchedulerPriority(20)
-	store := &Store{
-		accounts:       []*Account{bound, other},
-		maxConcurrency: 2,
-	}
+	store := (&Store{
+		accounts: []*Account{bound, other},
+	}).withMaxConcurrency(2)
 	store.bindSessionAffinity("conversation-active", bound, "")
 
 	// 旧实现会在 50 次请求或绑定满 5 分钟后换号;活跃会话现在必须继续粘住。
@@ -287,10 +278,9 @@ func TestBoundedAffinityEscapesAfterIdleGap(t *testing.T) {
 	bound := &Account{DBID: 1, AccessToken: "tok-1"}
 	other := &Account{DBID: 2, AccessToken: "tok-2"}
 	other.SetSchedulerPriority(20)
-	store := &Store{
-		accounts:       []*Account{bound, other},
-		maxConcurrency: 2,
-	}
+	store := (&Store{
+		accounts: []*Account{bound, other},
+	}).withMaxConcurrency(2)
 	store.bindSessionAffinity("conversation-idle", bound, "")
 
 	store.sessionMu.Lock()
@@ -316,13 +306,12 @@ func TestBoundedAffinityEscapesAfterIdleGap(t *testing.T) {
 }
 
 func TestNextForSessionFallsBackWhenBoundAccountExcluded(t *testing.T) {
-	store := &Store{
+	store := (&Store{
 		accounts: []*Account{
 			{DBID: 1, AccessToken: "tok-1"},
 			{DBID: 2, AccessToken: "tok-2", ProxyURL: "http://proxy-2"},
 		},
-		maxConcurrency: 2,
-	}
+	}).withMaxConcurrency(2)
 	store.bindSessionAffinity("session-1", store.accounts[1], "http://proxy-2")
 	requireSessionBinding(t, store, "session-1", 2)
 
@@ -339,13 +328,12 @@ func TestNextForSessionFallsBackWhenBoundAccountExcluded(t *testing.T) {
 }
 
 func TestNextForSessionWithFilterFallsBackWhenBoundAccountRejected(t *testing.T) {
-	store := &Store{
+	store := (&Store{
 		accounts: []*Account{
 			{DBID: 1, AccessToken: "tok-1", PlanType: "pro"},
 			{DBID: 2, AccessToken: "tok-2", PlanType: "plus", ProxyURL: "http://proxy-2"},
 		},
-		maxConcurrency: 2,
-	}
+	}).withMaxConcurrency(2)
 	store.bindSessionAffinity("session-1", store.accounts[1], "http://proxy-2")
 	requireSessionBinding(t, store, "session-1", 2)
 
@@ -368,11 +356,10 @@ func TestSessionCapacitySpilloverKeepsDurableBinding(t *testing.T) {
 	fallback := &Account{DBID: 2, AccessToken: "tok-2"}
 	tokenCache := cache.NewMemory(1)
 	defer tokenCache.Close()
-	store := &Store{
-		accounts:       []*Account{bound, fallback},
-		maxConcurrency: 1,
-		tokenCache:     tokenCache,
-	}
+	store := (&Store{
+		accounts:   []*Account{bound, fallback},
+		tokenCache: tokenCache,
+	}).withMaxConcurrency(1)
 	store.SetSessionSlotBuffer(50 * time.Millisecond)
 	store.SetSessionSlotBufferEnabled(true)
 	store.bindSessionAffinity("capacity-spillover", bound, "")
@@ -409,10 +396,9 @@ func TestSessionCapacitySpilloverKeepsDurableBinding(t *testing.T) {
 func TestSessionFilterFallbackStillMigratesBinding(t *testing.T) {
 	bound := &Account{DBID: 1, AccessToken: "tok-1"}
 	fallback := &Account{DBID: 2, AccessToken: "tok-2"}
-	store := &Store{
-		accounts:       []*Account{bound, fallback},
-		maxConcurrency: 1,
-	}
+	store := (&Store{
+		accounts: []*Account{bound, fallback},
+	}).withMaxConcurrency(1)
 	store.bindSessionAffinity("filter-migration", bound, "")
 
 	selected, proxyURL, guard := store.NextForSessionWithDispatchGuard("filter-migration", 0, nil, func(account *Account) bool {
@@ -434,14 +420,13 @@ func TestSessionFilterFallbackStillMigratesBinding(t *testing.T) {
 }
 
 func TestNoAffinitySplitGroupKeepsSessionStickyWithinTargetGroup(t *testing.T) {
-	store := &Store{
+	store := (&Store{
 		accounts: []*Account{
 			{DBID: 1, AccessToken: "primary", GroupIDs: []int64{10}},
 			{DBID: 2, AccessToken: "split-a", GroupIDs: []int64{20}},
 			{DBID: 3, AccessToken: "split-b", GroupIDs: []int64{20}},
 		},
-		maxConcurrency: 1,
-	}
+	}).withMaxConcurrency(1)
 	store.SetAPIKeyAllowedGroups(7, []int64{10})
 	store.SetAPIKeyNoAffinityGroups(7, []int64{20})
 	splitGroups := map[int64]struct{}{20: {}}
@@ -474,13 +459,12 @@ func TestNoAffinitySplitGroupKeepsSessionStickyWithinTargetGroup(t *testing.T) {
 }
 
 func TestNextForSessionFallsBackWhenBoundAccountIsError(t *testing.T) {
-	store := &Store{
+	store := (&Store{
 		accounts: []*Account{
 			{DBID: 1, AccessToken: "tok-1"},
 			{DBID: 2, AccessToken: "tok-2", ProxyURL: "http://proxy-2", Status: StatusError, ErrorMsg: "deactivated_workspace"},
 		},
-		maxConcurrency: 2,
-	}
+	}).withMaxConcurrency(2)
 	store.bindSessionAffinity("session-1", store.accounts[1], "http://proxy-2")
 	requireSessionBinding(t, store, "session-1", 2)
 
@@ -500,13 +484,12 @@ func TestNextForSessionFallsBackWhenBoundAccountIsError(t *testing.T) {
 }
 
 func TestWaitForSessionAvailableReturnsBoundAccount(t *testing.T) {
-	store := &Store{
+	store := (&Store{
 		accounts: []*Account{
 			{DBID: 1, AccessToken: "tok-1"},
 			{DBID: 2, AccessToken: "tok-2", ProxyURL: "http://proxy-2"},
 		},
-		maxConcurrency: 1,
-	}
+	}).withMaxConcurrency(1)
 	store.bindSessionAffinity("session-1", store.accounts[1], "http://proxy-2")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
@@ -525,13 +508,12 @@ func TestWaitForSessionAvailableReturnsBoundAccount(t *testing.T) {
 }
 
 func TestWaitForSessionAvailableFallsBackWhenBindingExpired(t *testing.T) {
-	store := &Store{
+	store := (&Store{
 		accounts: []*Account{
 			{DBID: 1, AccessToken: "tok-1"},
 		},
-		maxConcurrency:  1,
 		sessionBindings: map[string]sessionAffinity{"session-1": {accountID: 99, proxyURL: "http://stale", expiresAt: time.Now().Add(-time.Minute)}},
-	}
+	}).withMaxConcurrency(1)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
@@ -549,13 +531,12 @@ func TestWaitForSessionAvailableFallsBackWhenBindingExpired(t *testing.T) {
 }
 
 func TestWaitForSessionAvailableRespectsExcludeSet(t *testing.T) {
-	store := &Store{
+	store := (&Store{
 		accounts: []*Account{
 			{DBID: 1, AccessToken: "tok-1"},
 			{DBID: 2, AccessToken: "tok-2", ProxyURL: "http://proxy-2"},
 		},
-		maxConcurrency: 1,
-	}
+	}).withMaxConcurrency(1)
 	store.bindSessionAffinity("session-1", store.accounts[1], "http://proxy-2")
 	requireSessionBinding(t, store, "session-1", 2)
 
@@ -575,10 +556,9 @@ func TestWaitForSessionAvailableRespectsExcludeSet(t *testing.T) {
 }
 
 func TestWaitForSessionAvailableReturnsImmediatelyWhenNoDispatchCandidate(t *testing.T) {
-	store := &Store{
-		accounts:       []*Account{},
-		maxConcurrency: 1,
-	}
+	store := (&Store{
+		accounts: []*Account{},
+	}).withMaxConcurrency(1)
 
 	start := time.Now()
 	acc, proxyURL := store.WaitForSessionAvailable(context.Background(), "", 2*time.Second, 0, nil)
@@ -597,11 +577,10 @@ func TestWaitForSessionAvailableReturnsImmediatelyWhenNoDispatchCandidate(t *tes
 
 func TestWaitForSessionAvailableKeepsWaitingWhenCandidateIsBusy(t *testing.T) {
 	account := &Account{DBID: 1, AccessToken: "tok-1"}
-	store := &Store{
-		accounts:       []*Account{account},
-		maxConcurrency: 1,
-	}
-	atomic.StoreInt64(&account.ActiveRequests, 1)
+	store := (&Store{
+		accounts: []*Account{account},
+	}).withMaxConcurrency(1)
+	account.ActiveRequests.Store(1)
 
 	go func() {
 		time.Sleep(75 * time.Millisecond)
@@ -622,8 +601,8 @@ func TestWaitForSessionAvailableKeepsWaitingWhenCandidateIsBusy(t *testing.T) {
 
 func TestWaitForSessionAvailableVariantsRespectContextCancellation(t *testing.T) {
 	account := &Account{DBID: 1, AccessToken: "tok-1"}
-	store := &Store{accounts: []*Account{account}, maxConcurrency: 1}
-	atomic.StoreInt64(&account.ActiveRequests, 1)
+	store := (&Store{accounts: []*Account{account}}).withMaxConcurrency(1)
+	account.ActiveRequests.Store(1)
 	tests := []struct {
 		name string
 		wait func(context.Context) (*Account, string)
@@ -656,13 +635,12 @@ func TestWaitForSessionAvailableVariantsRespectContextCancellation(t *testing.T)
 
 func TestUnbindSessionAffinityRemovesMatchingBinding(t *testing.T) {
 	boundAccount := &Account{DBID: 2, AccessToken: "tok-2", ProxyURL: "http://proxy-2", Disabled: 1}
-	store := &Store{
+	store := (&Store{
 		accounts: []*Account{
 			{DBID: 1, AccessToken: "tok-1"},
 			boundAccount,
 		},
-		maxConcurrency: 1,
-	}
+	}).withMaxConcurrency(1)
 	store.bindSessionAffinity("session-1", boundAccount, "http://proxy-2")
 	requireSessionBinding(t, store, "session-1", 2)
 
@@ -681,13 +659,12 @@ func TestUnbindSessionAffinityRemovesMatchingBinding(t *testing.T) {
 }
 
 func TestNextForSessionFallsBackWhenAPIKeyNotAllowed(t *testing.T) {
-	store := &Store{
+	store := (&Store{
 		accounts: []*Account{
 			{DBID: 1, AccessToken: "tok-1"},
 			{DBID: 2, AccessToken: "tok-2", ProxyURL: "http://proxy-2", AllowedAPIKeyIDs: []int64{2}, allowedAPIKeySet: map[int64]struct{}{2: {}}},
 		},
-		maxConcurrency: 2,
-	}
+	}).withMaxConcurrency(2)
 	store.bindSessionAffinity("session-1", store.accounts[1], "http://proxy-2")
 	requireSessionBinding(t, store, "session-1", 2)
 
@@ -704,13 +681,12 @@ func TestNextForSessionFallsBackWhenAPIKeyNotAllowed(t *testing.T) {
 }
 
 func TestNextForSessionFallsBackWhenAPIKeyGroupNotAllowed(t *testing.T) {
-	store := &Store{
+	store := (&Store{
 		accounts: []*Account{
 			{DBID: 1, AccessToken: "tok-1", GroupIDs: []int64{20}},
 			{DBID: 2, AccessToken: "tok-2", ProxyURL: "http://proxy-2", GroupIDs: []int64{10}},
 		},
-		maxConcurrency: 2,
-	}
+	}).withMaxConcurrency(2)
 	store.SetAPIKeyAllowedGroups(1, []int64{20})
 	store.bindSessionAffinity("session-1", store.accounts[1], "http://proxy-2")
 	requireSessionBinding(t, store, "session-1", 2)

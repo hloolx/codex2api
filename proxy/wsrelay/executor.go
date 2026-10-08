@@ -139,13 +139,22 @@ func (e *Executor) ExecuteRequestViaWebsocket(
 
 	// 出口链路统一由 ResolveCodexWebsocketEgress 决定(Resin > 代理 > 直连):
 	// Resin 模式下 WS 地址改写为反代路径,拨号侧(createConnection)同样按它跳过代理。
-	egress := proxy.ResolveCodexWebsocketEgress(account, wsURL, effectiveProxyURL(account, proxyOverride))
+	egress := proxy.ResolveCodexRequestEgress(ctx, account, wsURL, effectiveProxyURL(account, proxyOverride), true)
 	wsURL = egress.URL
 
 	// 准备请求头
-	headers := e.prepareWebsocketHeaders(accessToken, account, accountIDStr, headerSessionID, apiKey, deviceCfg, ginHeaders, wsBody)
-	// 凭据级 turn state 注入在账号自定义头之后落定（帧体已由 proxy.ExecuteRequest 写入）。
-	proxy.ApplyCodexTurnStateInjectionHeader(ctx, headers)
+	// 跨账号回声守卫在握手头装配末尾剥离已知来自其他账号的 turn state。
+	affinityKey := proxy.CodexTurnStateAffinityKeyFromContext(ctx)
+	headers, err := e.prepareWebsocketHeadersChecked(ctx, accessToken, account, accountIDStr, headerSessionID, apiKey, deviceCfg, ginHeaders, wsBody, affinityKey)
+	if err != nil {
+		return nil, err
+	}
+	// 握手头在复用连接上不会重发；每轮必须把最终状态同步到 response.create。
+	if state := headers.Get("X-Codex-Turn-State"); state != "" {
+		wsBody, _ = sjson.SetBytes(wsBody, "client_metadata.x-codex-turn-state", state)
+	} else {
+		wsBody, _ = sjson.DeleteBytes(wsBody, "client_metadata.x-codex-turn-state")
+	}
 	// Record the attempted handshake UA immediately so failed handshakes are
 	// still auditable. A reused connection replaces this below with the UA that
 	// was actually sent when that connection was established.
@@ -179,7 +188,7 @@ func (e *Executor) ExecuteRequestViaWebsocket(
 	var err2 error
 	acquireStart := time.Now()
 	if prevRespID := strings.TrimSpace(gjson.GetBytes(wsBody, "previous_response_id").String()); prevRespID != "" {
-		if pwc, ppr, slotKey := e.manager.AcquirePreferredConnection(prevRespID, account.ID(), apiKey); pwc != nil {
+		if pwc, ppr, slotKey := e.acquireClientContinuation(websocketContinuation{responseID: prevRespID, accountID: account.ID(), apiKey: apiKey, identity: websocketClientIdentity(headers)}); pwc != nil {
 			wc, pr, poolSessionID = pwc, ppr, slotKey
 		}
 	}
@@ -187,7 +196,18 @@ func (e *Executor) ExecuteRequestViaWebsocket(
 	if baseKey == "" && headerSessionID != sessionID {
 		baseKey = headerSessionID
 	}
+	// Handshake headers (including X-Codex-Turn-State from template Apply) freeze at
+	// dial time. Isolate reusable slots by the same model string used for template
+	// lookup so a later model cannot reuse a connection whose turn-state was frozen
+	// for a different template identity. prompt_cache_key / session header isolation
+	// comments above are unchanged.
+	baseKey = reusablePoolBaseKeyWithModel(baseKey, gjson.GetBytes(wsBody, "model").String())
+	baseKey = websocketClientPoolKey(baseKey, headers)
 	if wc == nil {
+		poolSessionID = websocketClientPoolKey(poolSessionID, headers)
+		// A pooled handshake must belong to the same mapped conversation/thread.
+		poolSessionID = proxy.ScopeCodexFingerprintTransportKey(poolSessionID, account, ginHeaders)
+		baseKey = proxy.ScopeCodexFingerprintTransportKey(baseKey, account, ginHeaders)
 		if proxy.IsStatelessWebsocketSessionID(sessionID) && baseKey != "" && !statelessOneShotEnabled() {
 			wc, pr, poolSessionID, err2 = e.manager.AcquireReusableConnection(ctx, account, wsURL, baseKey, sessionID, statelessConnectionSlots(), headers, proxyOverride)
 		} else {
@@ -315,8 +335,22 @@ func (e *Executor) prepareWebsocketBody(body []byte, sessionID string) []byte {
 	return wsBody
 }
 
-// prepareWebsocketHeaders 准备 WebSocket 请求头
-func (e *Executor) prepareWebsocketHeaders(accessToken string, account *auth.Account, accountID, sessionID, apiKey string, deviceCfg *proxy.DeviceProfileConfig, ginHeaders http.Header, wsBody []byte) http.Header {
+// reusablePoolBaseKeyWithModel isolates reusable WS slots by the model string used
+// for turn-state template lookup. Handshake headers freeze at dial time; without
+// this, a later model can reuse a connection whose X-Codex-Turn-State was frozen
+// for a different template identity.
+func reusablePoolBaseKeyWithModel(baseKey, model string) string {
+	baseKey = strings.TrimSpace(baseKey)
+	model = strings.TrimSpace(model)
+	if baseKey == "" || model == "" {
+		return baseKey
+	}
+	return baseKey + "|m:" + model
+}
+
+// prepareWebsocketHeadersChecked 准备 WebSocket 请求头；客户端身份解析失败时返回错误，不组装残缺握手头。
+// affinityKey 用于 turn-state 跨账号回声守卫；空串时守卫为空操作。
+func (e *Executor) prepareWebsocketHeadersChecked(ctx context.Context, accessToken string, account *auth.Account, accountID, sessionID, apiKey string, deviceCfg *proxy.DeviceProfileConfig, ginHeaders http.Header, wsBody []byte, affinityKey string) (http.Header, error) {
 	headers := http.Header{}
 
 	// 认证头
@@ -325,20 +359,21 @@ func (e *Executor) prepareWebsocketHeaders(accessToken string, account *auth.Acc
 	// Beta header 启用 WebSocket 响应 API
 	headers.Set("OpenAI-Beta", responsesWebsocketBetaHeader)
 
-	usedGeneratedHeaders := false
+	if account == nil {
+		account = &auth.Account{AccountID: accountID}
+	}
+	identity, err := proxy.ResolveCodexOutboundClientIdentity(proxy.CodexClientIdentityInput{Account: account, APIKey: apiKey, DeviceConfig: deviceCfg, Headers: ginHeaders})
+	if err != nil {
+		return nil, err
+	}
+	usedGeneratedHeaders := identity.Generated
 	if shouldSendWebsocketUserAgent() {
-		if account == nil {
-			account = &auth.Account{AccountID: accountID}
-		}
-		var userAgent, version string
-		userAgent, version, usedGeneratedHeaders = proxy.ResolveCodexOutboundClientHeadersWithDecision(account, apiKey, deviceCfg, ginHeaders)
-		headers.Set("User-Agent", userAgent)
-		if version != "" {
-			headers.Set("Version", version)
+		headers.Set("User-Agent", identity.UserAgent)
+		if identity.Version != "" {
+			headers.Set("Version", identity.Version)
 		}
 	} else {
-		// Keep an explicit empty header entry so net/http Request.Write suppresses
-		// its implicit Go-http-client/1.1 fallback during the WS handshake.
+		// 显式空值抑制 Go 默认 UA；版本检查仍在组装前执行。
 		headers["User-Agent"] = []string{""}
 	}
 	if betaFeatures := strings.TrimSpace(ginHeaders.Get("X-Codex-Beta-Features")); betaFeatures != "" {
@@ -353,19 +388,25 @@ func (e *Executor) prepareWebsocketHeaders(accessToken string, account *auth.Acc
 	// Originator：与 HTTP 路径同规则——生成 UA 时跟随生成的客户端前缀，
 	// 透传官方客户端时沿用下游值。
 	if usedGeneratedHeaders {
-		headers.Set("Originator", proxy.CodexOriginatorForGeneratedUserAgent(headers.Get("User-Agent")))
+		headers.Set("Originator", proxy.CodexOriginatorForGeneratedUserAgent(identity.UserAgent))
 	} else if originator := strings.TrimSpace(ginHeaders.Get("Originator")); originator != "" && proxy.IsCodexOfficialClientByHeaders("", originator) {
 		headers.Set("Originator", originator)
 	} else {
 		headers.Set("Originator", proxy.Originator)
 	}
-	// X-Oai-Attestation：DeviceCheck 设备认证头（上游 openai/codex#20619），
-	// 仅在下游携带时透传，本代理不伪造（假 token 服务端验证必败，反而暴露）。
+	// 先透传下游证明；Windows Desktop 身份缺失时在账号自定义头之后补不可用状态。
 	for _, name := range []string{"X-Codex-Turn-State", "X-Codex-Turn-Metadata", "X-Client-Request-Id", "X-Responsesapi-Include-Timing-Metrics", "X-Oai-Attestation"} {
 		if value := strings.TrimSpace(ginHeaders.Get(name)); value != "" {
 			headers.Set(name, value)
 		}
 	}
+	if headers.Get("X-Codex-Turn-State") == "" {
+		if state := strings.TrimSpace(gjson.GetBytes(wsBody, "client_metadata.x-codex-turn-state").String()); state != "" {
+			headers.Set("X-Codex-Turn-State", state)
+		}
+	}
+	proxy.ApplyCodexTurnStateInjectionHeader(ctx, headers)
+	proxy.GuardCodexTurnStateEcho(affinityKey, account, headers)
 	// 指纹收敛：在透传之后覆盖客户端原值，在账号自定义头之前保留运维覆盖优先级。
 	// 握手头是逐连接冻结的，复用连接沿用建连时的取值；收敛值按账号恒定，正好与
 	// 这一语义相容。off 档为空操作。
@@ -379,9 +420,7 @@ func (e *Executor) prepareWebsocketHeaders(accessToken string, account *auth.Acc
 	// （codex-rs/core/src/client.rs build_websocket_headers）与 HTTP /responses 同形，
 	// 都是 session-id / thread-id / x-client-request-id，也都不发 Conversation_id。
 	// legacy 档下该函数恢复旧的 Session_id + 清 Conversation_id 行为。
-	if sessionID = strings.TrimSpace(sessionID); sessionID != "" {
-		proxy.ApplyCodexSessionHeaders(headers, account, sessionID, ginHeaders, true)
-	}
+	proxy.ApplyCodexSessionHeaders(headers, account, sessionID, ginHeaders, true)
 	for name, value := range account.GetCustomHeaders() {
 		name = strings.TrimSpace(name)
 		if name == "" {
@@ -389,12 +428,13 @@ func (e *Executor) prepareWebsocketHeaders(accessToken string, account *auth.Acc
 		}
 		headers.Set(name, value)
 	}
+	proxy.ApplyWindowsDesktopAttestation(headers, account)
 
 	// routing hint 由网关按最终 WS 帧体合成，在账号自定义头之后设置。
 	// 握手头逐连接冻结：复用连接沿用建连时的 hint，语义为拨号期软亲和。
 	proxy.ApplyCodexRoutingHint(headers, account, wsBody)
 
-	return headers
+	return headers, nil
 }
 
 // sendRequest 发送 WebSocket 请求
@@ -768,6 +808,8 @@ func websocketResponseToHTTP(ctx context.Context, wsResp *WsResponse, statusCode
 		}
 	}
 
+	// 连接握手的状态不是本轮上游响应；复用时不可重采集或回传旧快照。
+	resp.Header.Del("X-Codex-Turn-State")
 	// 设置 SSE 响应头
 	resp.Header.Set("Content-Type", "text/event-stream")
 	resp.Header.Set("Cache-Control", "no-cache")

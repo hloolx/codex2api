@@ -147,9 +147,9 @@ func TestAccountResponseOmitsCodexFingerprintModeForRelayAccounts(t *testing.T) 
 	gin.SetMode(gin.TestMode)
 	db := newTestAdminDB(t)
 	accountID, err := db.InsertAccountWithCredentials(context.Background(), "relay", map[string]interface{}{
-		"upstream_type": auth.UpstreamOpenAIResponses,
-		"base_url":      "https://relay.example.com",
-		"api_key":       "relay-token",
+		"upstream_type":                        auth.UpstreamOpenAIResponses,
+		"base_url":                             "https://relay.example.com",
+		"api_key":                              "relay-token",
 		auth.CodexFingerprintModeCredentialKey: auth.CodexFingerprintModeFull,
 	}, "")
 	if err != nil {
@@ -292,5 +292,71 @@ func TestBatchUpdateAccountsAppliesCodexFingerprintMode(t *testing.T) {
 		if got := accountFingerprintCredential(t, db, id); got != auth.CodexFingerprintModeSession {
 			t.Fatalf("account %d credential = %q, want %q", id, got, auth.CodexFingerprintModeSession)
 		}
+	}
+}
+
+func TestSessionIdentityFingerprintPersistenceAndDefaults(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, mode := range []string{auth.CodexFingerprintModeSingleMachineMultiWindow} {
+		t.Run(mode, func(t *testing.T) {
+			db := newTestAdminDB(t)
+			settings := defaultBootstrapSettings()
+			if err := db.UpdateSystemSettings(context.Background(), settings); err != nil {
+				t.Fatal(err)
+			}
+			tc := cache.NewMemory(4)
+			t.Cleanup(func() { _ = tc.Close() })
+			store := auth.NewStore(db, tc, settings)
+			t.Cleanup(store.Stop)
+			h := NewHandler(store, db, tc, proxy.NewRateLimiter(settings.GlobalRPM), "test-secret")
+			id := insertTestAccount(t, db)
+			if err := store.LoadAccountByID(context.Background(), id); err != nil {
+				t.Fatal(err)
+			}
+			// Single-account API, persisted credentials and immediate runtime all agree.
+			rec := patchAccountScheduler(t, h, id, fmt.Sprintf(`{"codex_fingerprint_mode":%q}`, mode))
+			if rec.Code != http.StatusOK {
+				t.Fatal(rec.Code, rec.Body.String())
+			}
+			if accountFingerprintCredential(t, db, id) != mode || store.FindByID(id).EffectiveCodexFingerprintMode() != mode {
+				t.Fatal("account persistence/runtime mismatch")
+			}
+			rec = patchAccountScheduler(t, h, id, `{"codex_fingerprint_mode":null}`)
+			if rec.Code != http.StatusOK || accountFingerprintCredential(t, db, id) != "off" {
+				t.Fatal("reset failed")
+			}
+			// Batch API uses the same validation and credential storage.
+			rec = httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			c.Request = httptest.NewRequest(http.MethodPatch, "/api/admin/accounts/batch", strings.NewReader(fmt.Sprintf(`{"ids":[%d],"codex_fingerprint_mode":%q}`, id, mode)))
+			c.Request.Header.Set("Content-Type", "application/json")
+			h.BatchUpdateAccounts(c)
+			if rec.Code != http.StatusOK || accountFingerprintCredential(t, db, id) != mode {
+				t.Fatal("batch failed", rec.Body.String())
+			}
+			// System default must survive database normalization and stamp only new accounts.
+			rec = httptest.NewRecorder()
+			c, _ = gin.CreateTestContext(rec)
+			c.Request = httptest.NewRequest(http.MethodPut, "/api/admin/settings", strings.NewReader(fmt.Sprintf(`{"codex_fingerprint_default_mode":%q}`, mode)))
+			c.Request.Header.Set("Content-Type", "application/json")
+			h.UpdateSettings(c)
+			if rec.Code != http.StatusOK {
+				t.Fatal(rec.Code, rec.Body.String())
+			}
+			persisted, err := db.GetSystemSettings(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if persisted.CodexFingerprintDefaultMode != mode || store.GetCodexFingerprintDefaultMode() != mode {
+				t.Fatal("default persistence/runtime mismatch")
+			}
+			seed := tokenCredentialSeed{refreshToken: "rt-test"}
+			if h.newCodexAccountCredentials(seed)[auth.CodexFingerprintModeCredentialKey] != mode {
+				t.Fatal("new-account default missing")
+			}
+			if _, exists := tokenCredentialMap(seed)[auth.CodexFingerprintModeCredentialKey]; exists {
+				t.Fatal("refresh path overwrites mode")
+			}
+		})
 	}
 }

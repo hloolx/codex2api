@@ -181,16 +181,16 @@ func TestLiveCreateForwardsSDPAndLocation(t *testing.T) {
 	if gotAlpha != "quicksilver=v2" || gotAccept != "application/sdp" || gotBeta != "" {
 		t.Fatalf("alpha=%q accept=%q beta=%q", gotAlpha, gotAccept, gotBeta)
 	}
-	if account.ActiveRequests != 1 {
-		t.Fatalf("account reservation = %d, want 1 until finalize", account.ActiveRequests)
+	if account.ActiveRequests.Load() != 1 {
+		t.Fatalf("account reservation = %d, want 1 until finalize", account.ActiveRequests.Load())
 	}
 	record, _, err := handler.liveCalls().get(context.Background(), "rtc_test_1")
 	if err != nil || record == nil || record.Model != "gpt-live-1" {
 		t.Fatalf("record=%+v err=%v", record, err)
 	}
 	handler.liveCalls().finalize(record)
-	if account.ActiveRequests != 0 {
-		t.Fatalf("account reservation after finalize = %d", account.ActiveRequests)
+	if account.ActiveRequests.Load() != 0 {
+		t.Fatalf("account reservation after finalize = %d", account.ActiveRequests.Load())
 	}
 }
 
@@ -246,7 +246,7 @@ func TestLiveFinalizeIdempotent(t *testing.T) {
 	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 1})
 	account := &auth.Account{DBID: 8, AccessToken: "at"}
 	store.AddAccount(account)
-	account.ActiveRequests = 1
+	account.ActiveRequests.Store(1)
 	handler := NewHandler(store, nil, &config.Config{AdminSecret: "secret"}, nil)
 	handler.SetRuntimeCache(cache.NewMemory(1))
 	record := &liveCallRecord{
@@ -268,8 +268,8 @@ func TestLiveFinalizeIdempotent(t *testing.T) {
 	if logs.Load() != 1 {
 		t.Fatalf("usage logs = %d, want 1", logs.Load())
 	}
-	if account.ActiveRequests != 0 {
-		t.Fatalf("ActiveRequests=%d", account.ActiveRequests)
+	if account.ActiveRequests.Load() != 0 {
+		t.Fatalf("ActiveRequests=%d", account.ActiveRequests.Load())
 	}
 }
 

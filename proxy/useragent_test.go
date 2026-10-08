@@ -50,7 +50,7 @@ func TestCodexUserAgentConfigBuildsOfficialCLIShape(t *testing.T) {
 	}
 }
 
-func TestCodexUserAgentConfigRaisesStructuredVersionToFloor(t *testing.T) {
+func TestCodexUserAgentConfigManualVersionOverridesFloor(t *testing.T) {
 	raw := `{"client_name":"codex-tui","client_version":"0.142.0","os_name":"Linux","os_version":"Unknown","arch":"x86_64","terminal":"xterm-256color"}`
 	normalized, err := NormalizeCodexUserAgentConfigJSON(raw)
 	if err != nil {
@@ -60,15 +60,15 @@ func TestCodexUserAgentConfigRaisesStructuredVersionToFloor(t *testing.T) {
 	if !ok {
 		t.Fatal("codexUserAgentFromConfig() ok = false")
 	}
-	if version != "0.150.0" {
-		t.Fatalf("version = %q, want 0.150.0", version)
+	if version != "0.142.0" {
+		t.Fatalf("version = %q, want 0.142.0", version)
 	}
-	if !strings.Contains(userAgent, "codex-tui/0.150.0 ") || !strings.Contains(userAgent, "(codex-tui; 0.150.0)") {
+	if !strings.Contains(userAgent, "codex-tui/0.142.0 ") || !strings.Contains(userAgent, "(codex-tui; 0.142.0)") {
 		t.Fatalf("User-Agent = %q, want version floor applied in both markers", userAgent)
 	}
 }
 
-func TestCodexUserAgentConfigRaisesPrereleaseVersionToStableFloor(t *testing.T) {
+func TestCodexUserAgentConfigManualPrereleaseOverridesStableFloor(t *testing.T) {
 	raw := `{"client_name":"codex-tui","client_version":"0.142.0-alpha.10","os_name":"Linux","os_version":"Unknown","arch":"x86_64","terminal":"xterm-256color"}`
 	normalized, err := NormalizeCodexUserAgentConfigJSON(raw)
 	if err != nil {
@@ -78,10 +78,10 @@ func TestCodexUserAgentConfigRaisesPrereleaseVersionToStableFloor(t *testing.T) 
 	if !ok {
 		t.Fatal("codexUserAgentFromConfig() ok = false")
 	}
-	if version != "0.142.0" {
-		t.Fatalf("version = %q, want 0.142.0", version)
+	if version != "0.142.0-alpha.10" {
+		t.Fatalf("version = %q, want 0.142.0-alpha.10", version)
 	}
-	if !strings.Contains(userAgent, "codex-tui/0.142.0 ") || !strings.Contains(userAgent, "(codex-tui; 0.142.0)") {
+	if !strings.Contains(userAgent, "codex-tui/0.142.0-alpha.10 ") || !strings.Contains(userAgent, "(codex-tui; 0.142.0-alpha.10)") {
 		t.Fatalf("User-Agent = %q, want stable version floor applied in both markers", userAgent)
 	}
 }
@@ -120,8 +120,8 @@ func TestCodexUserAgentConfigRawOverrideWithoutVersionDoesNotSynthesizeVersion(t
 	}
 }
 
-// raw UA 只贡献指纹形状:可解析的版本段出站前重建为当前生效版本(前缀与尾部标识组两处)。
-func TestCodexUserAgentConfigRawOverrideRebuildsVersionSegments(t *testing.T) {
+// raw UA 原样覆盖，不改写版本段。
+func TestCodexUserAgentConfigRawOverridePreservesVersionSegments(t *testing.T) {
 	prev := CurrentRuntimeSettings()
 	t.Cleanup(func() { ApplyRuntimeSettings(prev) })
 	s := prev
@@ -136,17 +136,17 @@ func TestCodexUserAgentConfigRawOverrideRebuildsVersionSegments(t *testing.T) {
 	if !ok {
 		t.Fatal("codexUserAgentFromConfig() ok = false")
 	}
-	if version != latestCodexCLIVersion {
-		t.Fatalf("version = %q, want builtin %q", version, latestCodexCLIVersion)
+	if version != "0.100.0" {
+		t.Fatalf("version = %q, want raw 0.100.0", version)
 	}
-	want := "codex-tui/" + latestCodexCLIVersion + " (Linux Unknown; x86_64) xterm-256color (codex-tui; " + latestCodexCLIVersion + ")"
+	want := "codex-tui/0.100.0 (Linux Unknown; x86_64) xterm-256color (codex-tui; 0.100.0)"
 	if userAgent != want {
-		t.Fatalf("User-Agent = %q, want both version segments rebuilt: %q", userAgent, want)
+		t.Fatalf("User-Agent = %q, want exact raw override: %q", userAgent, want)
 	}
 }
 
-// 远端同步到更高版本后,raw UA 的版本段跟随同步值。
-func TestCodexUserAgentConfigRawOverrideFollowsSyncedVersion(t *testing.T) {
+// 同步版本不覆盖手填的 raw UA。
+func TestCodexUserAgentConfigRawOverrideIgnoresSyncedVersion(t *testing.T) {
 	prev := CurrentRuntimeSettings()
 	t.Cleanup(func() { ApplyRuntimeSettings(prev) })
 	s := prev
@@ -161,11 +161,11 @@ func TestCodexUserAgentConfigRawOverrideFollowsSyncedVersion(t *testing.T) {
 	if !ok {
 		t.Fatal("codexUserAgentFromConfig() ok = false")
 	}
-	if version != "0.200.0" {
-		t.Fatalf("version = %q, want synced 0.200.0", version)
+	if version != "0.144.1" {
+		t.Fatalf("version = %q, want original 0.144.1", version)
 	}
-	if !strings.Contains(userAgent, "codex-tui/0.200.0 ") || !strings.Contains(userAgent, "(codex-tui; 0.200.0)") {
-		t.Fatalf("User-Agent = %q, want synced version in both markers", userAgent)
+	if !strings.Contains(userAgent, "codex-tui/0.144.1 ") || !strings.Contains(userAgent, "(codex-tui; 0.144.1)") {
+		t.Fatalf("User-Agent = %q, want original version in both markers", userAgent)
 	}
 }
 
@@ -193,8 +193,8 @@ func TestCodexUserAgentConfigRawOverrideKeepsAheadPin(t *testing.T) {
 	}
 }
 
-// raw UA 分支同样叠加最低版本门槛(floor 高于生效版本时以 floor 为准)。
-func TestCodexUserAgentConfigRawOverrideAppliesVersionFloor(t *testing.T) {
+// raw UA 不受自动版本门槛约束。
+func TestCodexUserAgentConfigRawOverrideIgnoresVersionFloor(t *testing.T) {
 	prev := CurrentRuntimeSettings()
 	t.Cleanup(func() { ApplyRuntimeSettings(prev) })
 	s := prev
@@ -209,8 +209,8 @@ func TestCodexUserAgentConfigRawOverrideAppliesVersionFloor(t *testing.T) {
 	if !ok {
 		t.Fatal("codexUserAgentFromConfig() ok = false")
 	}
-	if version != "0.160.0" {
-		t.Fatalf("version = %q, want floor 0.160.0", version)
+	if version != "0.100.0" {
+		t.Fatalf("version = %q, want raw 0.100.0", version)
 	}
 }
 
@@ -278,7 +278,7 @@ func TestIsCodexStrictOfficialClientByHeaders(t *testing.T) {
 func TestCodexUserAgentConfigAllowsSpacedClientName(t *testing.T) {
 	// issue #653：ChatGPT 桌面端的 originator 是 "Codex Desktop"，客户端名必须允许空格；
 	// 首尾空白与内部连续空白折叠成单个空格。手填的名字会推断为桌面端形态，
-	// 末尾标记按目录把 CLI 0.153.3 配到桌面端构建号 26.901.41123，与真实桌面端一致。
+	// 末尾标记按目录把 CLI 0.153.3 配到桌面端构建号 26.901.51231，与真实桌面端一致。
 	raw := `{"client_name":"  Codex \t  Desktop ","client_version":"0.153.3","os_name":"Windows","os_version":"10.0.26100","arch":"x86_64","terminal":"unknown"}`
 	normalized, err := NormalizeCodexUserAgentConfigJSON(raw)
 	if err != nil {
@@ -291,7 +291,7 @@ func TestCodexUserAgentConfigAllowsSpacedClientName(t *testing.T) {
 	if !ok {
 		t.Fatal("codexUserAgentFromConfig() ok = false")
 	}
-	wantUA := "Codex Desktop/0.153.3 (Windows 10.0.26100; x86_64) unknown (Codex Desktop; 26.901.41123)"
+	wantUA := "Codex Desktop/0.153.3 (Windows 10.0.26100; x86_64) unknown (Codex Desktop; 26.901.51231)"
 	if userAgent != wantUA {
 		t.Fatalf("User-Agent = %q, want %q", userAgent, wantUA)
 	}
@@ -332,7 +332,7 @@ func TestCodexOriginatorForGeneratedUserAgent(t *testing.T) {
 		userAgent string
 		want      string
 	}{
-		{"Codex Desktop/0.153.3 (Windows 10.0.26100; x86_64) unknown (Codex Desktop; 26.901.41123)", "Codex Desktop"},
+		{"Codex Desktop/0.153.3 (Windows 10.0.26100; x86_64) unknown (Codex Desktop; 26.901.51231)", "Codex Desktop"},
 		{"Codex Desktop/0.153.3 (Mac OS 26.4.0; arm64) dumb (codex_exec; 0.153.3)", "Codex Desktop"},
 		{"codex-tui/0.153.3 (Mac OS 15.5.0; arm64) xterm-256color (codex-tui; 0.153.3)", "codex-tui"},
 		{"codex_cli_rs/0.150.0 (Mac OS 15.5.0; arm64) Apple_Terminal/464", "codex_cli_rs"},
@@ -349,4 +349,10 @@ func TestCodexOriginatorForGeneratedUserAgent(t *testing.T) {
 			t.Errorf("CodexOriginatorForGeneratedUserAgent(%q) = %q, want %q", tc.userAgent, got, tc.want)
 		}
 	}
+}
+
+// codexUserAgentFromConfig 是测试辅助：忽略版本不可用错误，只断言生成结果。
+func codexUserAgentFromConfig(raw string, accountID int64, versionFloor string) (string, string, bool) {
+	ua, version, ok, _ := codexUserAgentFromConfigChecked(raw, accountID, versionFloor)
+	return ua, version, ok
 }

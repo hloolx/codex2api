@@ -61,6 +61,7 @@ GPT Image 2.5 的 Flare / Sunburst 支持 `auto/low/medium/high/xhigh/max`；省
 | 401 / 403 | 检查凭据、有效期、密钥渠道、模型和分组授权 |
 | 429 `rate_limit_reached` | 检查模型周预算的 `error.details` 与 `Retry-After` |
 | 503 `no_available_account` | 检查账号启用状态、冷却、并发及可用模型 |
+| 503 `account_pool_concurrency_saturated` | 账号在，但并发窗口已满；稍后重试或提高并发上限 |
 | 503 `account_pool_usage_limit_reached` | 账号池额度耗尽；根据 `Retry-After` 等待重置或补充账号 |
 | 409 `response_context_unavailable` | 重发完整上下文，开始新响应链 |
 | 503 `service_unavailable` | 检查共享上下文或预算存储，退避后重试 |

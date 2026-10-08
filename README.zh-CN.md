@@ -364,7 +364,7 @@ Redis 模式下，共享上下文只要没有超过重建上限，即使大于 L
 | `POST /v1/responses`          | Responses 风格入口                                                                                       |
 | `POST /v1/images/generations` | OpenAI Images 生成入口                                                                                   |
 | `POST /v1/images/edits`       | OpenAI Images 编辑入口                                                                                   |
-| `GET /v1/models`              | 返回可用模型列表（含 gpt-6-astra、gpt-5.6-sol/terra/luna、gpt-5.5、gpt-5.3-codex-spark、gpt-image-2 等） |
+| `GET /v1/models`              | 返回可用模型列表（含 gpt-6-astra/sol/luna、gpt-5.6-sol/terra/luna、gpt-5.5、gpt-5.3-codex-spark、gpt-image-2 等） |
 | `GET /health`                 | 健康检查                                                                                                 |
 
 > **计费提示**：gpt-5.5 标准 tier 计费为 $5.00/M 输入 / $30.00/M 输出，priority tier 为 $12.50/M 输入 / $75.00/M 输出。其他模型按 billing 引擎规则计费。
@@ -604,6 +604,7 @@ codex2api/
 - `docker-compose.yml` 拉取 GHCR 镜像用于部署；`docker-compose.local.yml` 用 `build: .` 做本地构建
 - 前端基路径固定为 `/admin/`，本地开发和生产部署一致
 - 本地手动构建 Go 二进制前需先执行 `frontend/` 的 `npm run build`
+- 手动构建时，用 `VITE_APP_VERSION` 和 Go 的 `-ldflags '-X github.com/codex2api/internal/version.Version=...'` 传入同一版本号，并先构建前端。管理台对正式版本优先显示运行中的后端版本；前后端版本不一致时，版本弹窗会显示前端构建版本并提示重新构建。该提示不会替换已嵌入的旧前端资源，需重新构建前端再编译 Go 才能更新它们。
 - `.env` 只负责端口、数据库、Redis 等物理层配置；业务参数在管理台数据库里维护
 - API Key 以数据库为准，在管理台中配置
 

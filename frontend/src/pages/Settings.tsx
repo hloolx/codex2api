@@ -2,15 +2,17 @@ import type { ChangeEvent, FocusEvent, ReactNode } from 'react'
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { api, resetAdminAuthState, setAdminKey } from '../api'
-import { formatBeijingTime, getTimezone, setTimezone } from '../utils/time'
+import { formatBeijingTime } from '../utils/time'
+import DisplayTimezoneSelect from '../components/DisplayTimezoneSelect'
 import PageHeader from '../components/PageHeader'
+import CodexClientVersionsPanel from '../components/CodexClientVersionsPanel'
 import StateShell from '../components/StateShell'
 import StatePolicySettings from '../components/StatePolicySettings'
 import { useDataLoader } from '../hooks/useDataLoader'
 import { useToast } from '../hooks/useToast'
-import type { AntigravityOAuthClientSetting, AntigravitySettingsResponse, ChannelTestSettings, CodexUserAgentCatalog, CodexUserAgentPreview, HealthResponse, ModelInfo, SiteBranding, SystemSettings, UpstreamChannel } from '../types'
+import type { AntigravityOAuthClientSetting, AntigravitySettingsResponse, ChannelTestSettings, CodexClientVersionSyncResult, CodexClientVersionTarget, CodexUserAgentCatalog, CodexUserAgentPreview, HealthResponse, ModelInfo, SiteBranding, SystemSettings, UpstreamChannel } from '../types'
 import { ANTIGRAVITY_DEFAULT_MODELS } from '../lib/antigravityModels'
-import { countPayloadRules } from './PayloadRules'
+import { countPayloadRules, PAYLOAD_RULE_GROUPS } from './PayloadRules'
 import { getErrorMessage } from '../utils/error'
 import { DEFAULT_CLAUDE_MODEL_MAP } from '../lib/modelMapping'
 import {
@@ -61,6 +63,7 @@ import {
   SheetBody,
   SheetContent,
   SheetDescription,
+  SheetFooter,
   SheetHeader,
   SheetTitle,
 } from '@/components/ui/sheet'
@@ -72,6 +75,9 @@ import {
 } from '@/components/ui/tooltip'
 import {
   Activity,
+  ArrowRight,
+  ArrowUpRight,
+  Braces,
   Brain,
   Check,
   ChevronDown,
@@ -82,6 +88,7 @@ import {
   Database,
   ExternalLink,
   Eye,
+  Fingerprint,
   Gauge,
   Globe,
   Image as ImageIcon,
@@ -89,9 +96,11 @@ import {
   Link2,
   Loader2,
   Palette,
+  Plus,
   RefreshCw,
   RotateCcw,
   Save,
+  Search,
   Server,
   Shield,
   ShieldAlert,
@@ -113,6 +122,13 @@ import { useVisibleChannels } from '../visibleChannels'
 import { ALL_VISIBLE_CHANNEL_OPTIONS, FALLBACK_VISIBLE_CHANNEL, toggleVisibleChannel } from '../lib/visibleChannels'
 
 type ModelPanelKey = 'registry' | 'anthropic' | 'codex' | 'reasoning'
+const MODEL_PANEL_FIELDS = {
+  anthropic: 'model_mapping',
+  codex: 'codex_model_mapping',
+  reasoning: 'reasoning_effort_models',
+} as const satisfies Partial<Record<ModelPanelKey, keyof SystemSettings>>
+const MODEL_REGISTRY_PREVIEW_LIMIT = 6
+const MODEL_RULE_PREVIEW_LIMIT = 3
 
 type ModelMappingEntry = [string, string]
 const EMPTY_MODEL_MAPPING_ENTRIES: ModelMappingEntry[] = []
@@ -138,6 +154,27 @@ type CodexUserAgentConfig = {
 type CodexUAKind = 'codex-tui' | 'codex-desktop' | 'codex-vscode' | 'codex-exec' | 'custom'
 const CODEX_UA_KINDS: CodexUAKind[] = ['codex-tui', 'codex-desktop', 'codex-vscode', 'codex-exec', 'custom']
 const CODEX_UA_POOL_KINDS: CodexUAKind[] = ['codex-desktop', 'codex-vscode', 'codex-tui', 'codex-exec']
+const CODEX_CLIENT_SYNC_SOURCES = [
+  { key: 'cli', label: 'Codex CLI' },
+  { key: 'desktop_mac', label: 'Desktop macOS' },
+  { key: 'desktop_windows', label: 'Desktop Windows' },
+  { key: 'vscode', label: 'VS Code' },
+] as const
+type CodexClientSyncSource = (typeof CODEX_CLIENT_SYNC_SOURCES)[number]['key']
+
+// 设置接口只返回最后一次成功的配对；本次同步失败的目标把状态与错误叠加上去，面板才能显示失败原因。
+function overlayCodexClientSyncFailures(targets: CodexClientVersionTarget[], result: Record<CodexClientSyncSource, CodexClientVersionSyncResult>): CodexClientVersionTarget[] {
+  const failures = new Map<string, CodexClientVersionTarget>()
+  for (const source of CODEX_CLIENT_SYNC_SOURCES) {
+    for (const target of result[source.key].targets ?? []) {
+      if (target.error) failures.set(`${target.client_kind}/${target.target_platform}`, target)
+    }
+  }
+  return targets.map((target) => {
+    const failure = failures.get(`${target.client_kind}/${target.target_platform}`)
+    return failure ? { ...target, status: failure.status, error: failure.error } : target
+  })
+}
 const CODEX_UA_FALLBACK_POOL_MIX: Record<string, number> = { 'codex-desktop': 50, 'codex-vscode': 30, 'codex-tui': 20 }
 const CODEX_UA_STRING_KEYS = ['raw_user_agent', 'client_name', 'client_version', 'os_name', 'os_version', 'arch', 'terminal', 'client_kind', 'app_name', 'app_version', 'mode'] as const
 // 与后端 inferCodexClientKind 同规则:未指定形态的旧配置按客户端名推断。
@@ -497,25 +534,45 @@ function ModelMappingEditor({
     updateMappings(next)
   }
 
+  const listRef = useRef<HTMLDivElement>(null)
+  const focusLastRowRef = useRef(false)
   const handleAdd = () => {
     const defaultSource = sourceOptions && targetOptions
       ? sourceOptions[1]?.value ?? sourceOptions[0]?.value ?? ''
       : sourceOptions?.[0]?.value ?? ''
+    focusLastRowRef.current = true
     updateMappings([...mappings, [defaultSource, targetOptions?.[0]?.value ?? '']])
   }
 
+  useEffect(() => {
+    if (!focusLastRowRef.current) return
+    focusLastRowRef.current = false
+    const input = listRef.current?.querySelector<HTMLInputElement>('[data-mapping-row]:last-child input')
+    input?.focus()
+    input?.select()
+    input?.scrollIntoView({ block: 'nearest' })
+  }, [mappings.length])
+
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-3">
-      <div className="hidden shrink-0 grid-cols-[minmax(0,1fr)_minmax(0,1fr)_2rem] gap-1.5 px-1 text-xs font-semibold text-muted-foreground sm:grid">
-        <span>{sourceLabel}</span>
-        <span>{targetLabel}</span>
-        <span />
-      </div>
-      <div className="min-h-[180px] flex-1 space-y-2 overflow-y-auto pr-0.5 sm:space-y-1.5 sm:pr-1">
+      {mappings.length > 0 ? (
+        <div className="hidden shrink-0 grid-cols-[minmax(0,1fr)_1rem_minmax(0,1fr)_2rem] gap-1.5 px-1 text-xs font-semibold text-muted-foreground sm:grid">
+          <span>{sourceLabel}</span>
+          <span />
+          <span>{targetLabel}</span>
+          <span />
+        </div>
+      ) : (
+        <div className="rounded-lg border border-dashed border-border/70 py-8 text-center text-xs text-muted-foreground">
+          {t('settings2.mappingEmpty')}
+        </div>
+      )}
+      <div ref={listRef} className="space-y-2 sm:space-y-1.5">
         {mappings.map(([k, v], i) => (
           <div
             key={i}
-            className="grid grid-cols-1 gap-2 rounded-xl border border-border bg-background/70 p-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_2rem] sm:items-center sm:gap-1.5 sm:rounded-none sm:border-0 sm:bg-transparent sm:p-0"
+            data-mapping-row
+            className="grid grid-cols-1 gap-2 rounded-xl border border-border bg-background/70 p-3 sm:grid-cols-[minmax(0,1fr)_1rem_minmax(0,1fr)_2rem] sm:items-center sm:gap-1.5 sm:rounded-none sm:border-0 sm:bg-transparent sm:p-0"
           >
             <div className="min-w-0 space-y-1 sm:space-y-0">
               <span className="text-[11px] font-semibold text-muted-foreground sm:hidden">
@@ -529,6 +586,7 @@ function ModelMappingEditor({
                 onChange={(e: ChangeEvent<HTMLInputElement>) => handleChange(i, 0, e.target.value)}
               />
             </div>
+            <ArrowRight className="hidden size-3.5 justify-self-center text-muted-foreground/60 sm:block" aria-hidden="true" />
             <div className="min-w-0 space-y-1 sm:space-y-0">
               <span className="text-[11px] font-semibold text-muted-foreground sm:hidden">
                 {targetLabel}
@@ -566,8 +624,9 @@ function ModelMappingEditor({
           ))}
         </datalist>
       ) : null}
-      <Button type="button" variant="outline" size="sm" className="self-start" onClick={handleAdd}>
-        + {t('settings2.addMapping')}
+      <Button type="button" variant="outline" size="sm" className="w-full border-dashed text-muted-foreground hover:text-foreground" onClick={handleAdd}>
+        <Plus className="size-3.5" />
+        {t('settings2.addMapping')}
       </Button>
     </div>
   )
@@ -623,8 +682,13 @@ function ReasoningEffortModelsEditor({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-3">
+      {entries.length === 0 ? (
+        <div className="rounded-lg border border-dashed border-border/70 py-8 text-center text-xs text-muted-foreground">
+          {t('settings2.reasoningEmpty')}
+        </div>
+      ) : null}
       {/* Mobile: stacked cards */}
-      <div className="max-h-[320px] space-y-2 overflow-y-auto pr-0.5 sm:hidden">
+      <div className="space-y-2 sm:hidden">
         {entries.map((entry, i) => (
           <div
             key={i}
@@ -677,14 +741,14 @@ function ReasoningEffortModelsEditor({
       </div>
 
       {/* Desktop: compact grid */}
-      <div className="hidden min-h-0 flex-1 flex-col gap-2 sm:flex">
+      <div className={cn('hidden min-h-0 flex-1 flex-col gap-2', entries.length > 0 && 'sm:flex')}>
         <div className="grid shrink-0 grid-cols-[minmax(0,1.2fr)_minmax(0,0.8fr)_minmax(0,1fr)_2rem] gap-2 px-1 text-xs font-semibold text-muted-foreground">
           <span>{t('settings2.baseModel')}</span>
           <span>{t('settings2.reasoningEffort')}</span>
           <span>{t('settings2.generatedModel')}</span>
           <span />
         </div>
-        <div className="max-h-[220px] space-y-1.5 overflow-y-auto pr-1">
+        <div className="space-y-1.5">
           {entries.map((entry, i) => (
             <div
               key={i}
@@ -721,8 +785,9 @@ function ReasoningEffortModelsEditor({
           ))}
         </div>
       </div>
-      <Button type="button" variant="outline" size="sm" className="self-start" onClick={handleAdd}>
-        + {t('settings2.addReasoningModel')}
+      <Button type="button" variant="outline" size="sm" className="w-full border-dashed text-muted-foreground hover:text-foreground" onClick={handleAdd}>
+        <Plus className="size-3.5" />
+        {t('settings2.addReasoningModel')}
       </Button>
     </div>
   )
@@ -933,6 +998,59 @@ function AntigravityModelRedirectCard() {
             onCheckedChange={(checked) => void save({ redirect_overrides_effort: checked })}
           />
         </div>
+      </div>
+    </SettingsCard>
+  )
+}
+
+// Antigravity 思考内容下发:开启后 OAuth 账号的 Gemini thought 片段作为 reasoning 输出下发。
+function AntigravityThinkingCard() {
+  const { t } = useTranslation()
+  const { showToast } = useToast()
+  const [exposeThoughts, setExposeThoughts] = useState<boolean | null>(null)
+  const [saving, setSaving] = useState(false)
+
+  useEffect(() => {
+    let active = true
+    void api.getAntigravitySettings().then((response) => {
+      if (active) setExposeThoughts(response.expose_thoughts)
+    }).catch((error) => {
+      if (active) showToast(getErrorMessage(error), 'error')
+    })
+    return () => {
+      active = false
+    }
+  }, [showToast])
+
+  const save = useCallback(async (checked: boolean) => {
+    setSaving(true)
+    try {
+      const response = await api.updateAntigravitySettings({ expose_thoughts: checked })
+      setExposeThoughts(response.expose_thoughts)
+      showToast(t('settings.antigravityThinking.saved'), 'success')
+    } catch (error) {
+      showToast(getErrorMessage(error), 'error')
+    } finally {
+      setSaving(false)
+    }
+  }, [showToast, t])
+
+  return (
+    <SettingsCard
+      title={t('settings.antigravityThinking.title')}
+      description={t('settings.antigravityThinking.description')}
+      icon={<Brain className="size-4" />}
+    >
+      <div className="flex items-center justify-between gap-3 rounded-lg border border-border/60 px-3 py-2.5">
+        <div className="min-w-0">
+          <div className="text-sm font-medium">{t('settings.antigravityThinking.label')}</div>
+          <p className="mt-0.5 text-xs text-muted-foreground">{t('settings.antigravityThinking.hint')}</p>
+        </div>
+        <Switch
+          checked={exposeThoughts ?? false}
+          disabled={exposeThoughts === null || saving}
+          onCheckedChange={(checked) => void save(checked)}
+        />
       </div>
     </SettingsCard>
   )
@@ -1475,6 +1593,26 @@ function SettingField({
   )
 }
 
+function SettingsFieldGroup({
+  title,
+  hint,
+  children,
+}: {
+  title: string
+  hint?: string
+  children: ReactNode
+}) {
+  return (
+    <div className="grid grid-cols-1 gap-3 p-3.5 sm:p-4 md:grid-cols-[7.5rem_minmax(0,1fr)] md:gap-5">
+      <div className="min-w-0 md:pt-0.5">
+        <div className="text-[13px] font-semibold leading-snug text-foreground">{title}</div>
+        {hint ? <code className="mt-1 block truncate font-mono text-[11px] text-muted-foreground">{hint}</code> : null}
+      </div>
+      <div className="grid min-w-0 grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">{children}</div>
+    </div>
+  )
+}
+
 function SettingsSkeleton() {
   return (
     <div className="space-y-6" aria-busy="true" aria-live="polite">
@@ -1507,46 +1645,314 @@ function SettingsSkeleton() {
   )
 }
 
-function ModelSummaryCard({
+function UnsavedDot({ label }: { label: string }) {
+  return (
+    <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-semibold leading-none text-amber-600 dark:text-amber-400">
+      <span className="size-1.5 rounded-full bg-amber-500" aria-hidden="true" />
+      {label}
+    </span>
+  )
+}
+
+function ModelSourceBadge({ source }: { source: string }) {
+  const { t } = useTranslation()
+  const label =
+    source === 'official_codex_docs'
+      ? t('settings.modelSourceOfficial')
+      : source === 'upstream_manifest'
+        ? t('settings.modelSourceUpstream')
+        : source === 'reasoning_effort'
+          ? t('settings.modelSourceReasoning')
+          : source === 'manual'
+            ? t('settings.modelSourceManual')
+            : source === 'daybreak'
+              ? 'Daybreak'
+              : t('settings.modelSourceBuiltin')
+  return (
+    <Badge
+      variant={source === 'official_codex_docs' ? 'default' : source === 'builtin' ? 'outline' : 'secondary'}
+      className="text-[10px]"
+    >
+      {label}
+    </Badge>
+  )
+}
+
+function ModelRegistryOverview({
+  items,
+  lastSyncedLabel,
+  sourceUrl,
+  syncing,
+  onSync,
+  onOpen,
+}: {
+  items: ModelInfo[]
+  lastSyncedLabel: string
+  sourceUrl: string
+  syncing: boolean
+  onSync: () => void
+  onOpen: () => void
+}) {
+  const { t } = useTranslation()
+  const enabled = items.filter((model) => model.enabled)
+  const imageCount = enabled.filter((model) => model.category === 'image').length
+  const preview = enabled.slice(0, MODEL_REGISTRY_PREVIEW_LIMIT)
+  const stats = [
+    { label: t('settings.modelsEnabled'), value: `${enabled.length}/${items.length}` },
+    { label: t('settings.modelCategoryText'), value: String(enabled.length - imageCount) },
+    { label: t('settings.modelImage'), value: String(imageCount) },
+    { label: t('settings.modelsLastSynced'), value: lastSyncedLabel },
+  ]
+
+  return (
+    <SettingsCard
+      title={t('settings.modelRegistry')}
+      description={t('settings.modelRegistryDesc')}
+      icon={<Layers className="size-4" />}
+      badge={
+        <a
+          href={sourceUrl}
+          target="_blank"
+          rel="noreferrer"
+          className="inline-flex items-center gap-1 text-xs font-medium text-muted-foreground transition-colors hover:text-primary"
+        >
+          {t('settings.nav.openSource')}
+          <ExternalLink className="size-3" />
+        </a>
+      }
+    >
+      <div className="space-y-3.5">
+        <div className="grid grid-cols-2 overflow-hidden rounded-lg border border-border/60 bg-muted/20 sm:grid-cols-[repeat(3,minmax(0,1fr))_minmax(0,1.9fr)]">
+          {stats.map((stat, index) => (
+            <div
+              key={stat.label}
+              className={cn(
+                'min-w-0 px-3.5 py-2.5',
+                index % 2 === 1 && 'border-l border-border/60',
+                index >= 2 && 'max-sm:border-t max-sm:border-border/60',
+                index === 2 && 'sm:border-l',
+              )}
+            >
+              <div className="text-[11px] font-medium text-muted-foreground">{stat.label}</div>
+              <div className="mt-0.5 truncate text-sm font-semibold tabular-nums text-foreground" title={stat.value}>{stat.value}</div>
+            </div>
+          ))}
+        </div>
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <button
+            type="button"
+            onClick={onOpen}
+            className="group flex min-w-0 flex-1 flex-wrap items-center gap-1.5 rounded-lg text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+          >
+            {preview.map((model) => (
+              <span
+                key={model.id}
+                className="rounded-md border border-border/70 bg-background px-2 py-0.5 font-mono text-[11px] text-foreground/90 transition-colors group-hover:border-primary/30"
+              >
+                {model.id}
+              </span>
+            ))}
+            {enabled.length > preview.length ? (
+              <span className="rounded-md bg-muted px-2 py-0.5 text-[11px] font-semibold tabular-nums text-muted-foreground">
+                +{enabled.length - preview.length}
+              </span>
+            ) : null}
+          </button>
+          <div className="flex shrink-0 items-center gap-2">
+            <Button size="sm" variant="ghost" onClick={onOpen}>
+              {t('settings.modelRegistryViewAll', { count: items.length })}
+              <ChevronRight className="size-3.5" />
+            </Button>
+            <Button size="sm" variant="outline" onClick={onSync} disabled={syncing}>
+              <RefreshCw className={cn('size-3.5', syncing && 'animate-spin')} />
+              {syncing ? t('settings.modelsSyncing') : t('settings.syncUpstreamModels')}
+            </Button>
+          </div>
+        </div>
+      </div>
+    </SettingsCard>
+  )
+}
+
+function ModelRuleCard({
+  icon,
   title,
   description,
-  meta,
+  count,
+  preview,
+  dirty = false,
+  external = false,
   onOpen,
-  openLabel,
 }: {
+  icon: ReactNode
   title: string
   description: string
-  meta: string
+  count: number
+  preview?: ReactNode
+  dirty?: boolean
+  external?: boolean
   onOpen: () => void
-  openLabel: string
 }) {
+  const { t } = useTranslation()
+  const configured = count > 0
   return (
     <button
       type="button"
       onClick={onOpen}
-      className="group flex w-full items-start gap-3.5 rounded-xl border border-border/70 bg-card p-4 text-left shadow-2xs transition-all hover:border-primary/40 hover:bg-muted/10 hover:shadow-xs"
+      className="group flex h-full w-full flex-col rounded-xl border border-border/70 bg-card p-4 text-left shadow-2xs transition-all hover:-translate-y-px hover:border-primary/40 hover:shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
     >
-      <div className="mt-0.5 flex size-9 shrink-0 items-center justify-center rounded-lg bg-muted/70 text-muted-foreground ring-1 ring-border/60 transition-colors group-hover:bg-primary/10 group-hover:text-primary group-hover:ring-primary/20">
-        <Layers className="size-4" />
-      </div>
-      <div className="min-w-0 flex-1">
-        <div className="flex items-start justify-between gap-2">
-          <div className="min-w-0">
-            <div className="text-sm font-semibold leading-snug text-foreground">{title}</div>
-            <p className="mt-1 line-clamp-2 text-xs leading-relaxed text-muted-foreground">
-              {description}
-            </p>
-          </div>
-          <ChevronRight className="mt-0.5 size-4 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-0.5 group-hover:text-primary" />
+      <div className="flex items-start gap-3">
+        <div className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-muted/70 text-muted-foreground ring-1 ring-inset ring-border/60 transition-colors group-hover:bg-primary/10 group-hover:text-primary group-hover:ring-primary/20 [&_svg]:size-4">
+          {icon}
         </div>
-        <div className="mt-3 flex flex-wrap items-center gap-2">
-          <Badge variant="secondary" className="text-xs font-semibold tabular-nums">
-            {meta}
-          </Badge>
-          <span className="text-xs font-semibold text-primary group-hover:underline">{openLabel}</span>
+        <div className="min-w-0 flex-1">
+          <div className="flex min-w-0 items-center gap-2">
+            <span className="truncate text-sm font-semibold leading-snug text-foreground">{title}</span>
+            {dirty ? <UnsavedDot label={t('settings.modelRuleUnsaved')} /> : null}
+          </div>
+          <p className="mt-1 line-clamp-2 text-xs leading-relaxed text-muted-foreground" title={description}>{description}</p>
+        </div>
+        {external ? (
+          <ArrowUpRight className="mt-0.5 size-4 shrink-0 text-muted-foreground transition-transform group-hover:-translate-y-0.5 group-hover:translate-x-0.5 group-hover:text-primary" />
+        ) : (
+          <ChevronRight className="mt-0.5 size-4 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-0.5 group-hover:text-primary" />
+        )}
+      </div>
+      <div className="mt-3.5 flex flex-1 flex-col justify-end gap-3 border-t border-border/50 pt-3">
+        {configured ? (
+          preview ? <div className="min-h-[3.25rem]">{preview}</div> : null
+        ) : (
+          <div className="flex min-h-[3.25rem] items-center justify-center rounded-lg border border-dashed border-border/70 px-3 text-center text-[11px] text-muted-foreground transition-colors group-hover:border-primary/30 group-hover:text-foreground/80">
+            {t('settings.modelRuleAddFirst')}
+          </div>
+        )}
+        <div className="flex items-center justify-between gap-2 text-xs">
+          {configured ? (
+            <Badge variant="secondary" className="font-semibold tabular-nums">
+              {t('settings.nav.mappingCount', { count })}
+            </Badge>
+          ) : (
+            <span className="text-muted-foreground">{t('settings.modelRuleEmpty')}</span>
+          )}
+          <span className="font-medium text-muted-foreground transition-colors group-hover:text-primary">
+            {external ? t('settings.modelRuleOpenPage') : t('settings.nav.manage')}
+          </span>
         </div>
       </div>
     </button>
+  )
+}
+
+function ModelMappingPreview({ entries }: { entries: ModelMappingEntry[] }) {
+  return (
+    <ul className="space-y-1">
+      {entries.slice(0, MODEL_RULE_PREVIEW_LIMIT).map(([from, to], index) => (
+        <li key={`${from}-${index}`} className="flex min-w-0 items-center gap-1.5 font-mono text-[11px] leading-4">
+          <span className="min-w-0 truncate text-muted-foreground">{from}</span>
+          <ArrowRight className="size-3 shrink-0 text-muted-foreground/60" />
+          <span className="min-w-0 truncate font-medium text-foreground">{to}</span>
+        </li>
+      ))}
+    </ul>
+  )
+}
+
+function ModelChipPreview({ labels }: { labels: string[] }) {
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      {labels.map((label) => (
+        <span key={label} className="rounded-md border border-border/70 bg-muted/30 px-1.5 py-0.5 font-mono text-[11px] text-foreground/90">
+          {label}
+        </span>
+      ))}
+    </div>
+  )
+}
+
+function ModelRegistryPanel({
+  items,
+  lastSyncedLabel,
+  syncing,
+  onSync,
+}: {
+  items: ModelInfo[]
+  lastSyncedLabel: string
+  syncing: boolean
+  onSync: () => void
+}) {
+  const { t } = useTranslation()
+  const [query, setQuery] = useState('')
+  const [category, setCategory] = useState<'all' | 'text' | 'image'>('all')
+  const imageCount = items.filter((model) => model.category === 'image').length
+  const needle = query.trim().toLowerCase()
+  const filtered = items.filter((model) => {
+    if (category === 'image' && model.category !== 'image') return false
+    if (category === 'text' && model.category === 'image') return false
+    return !needle || model.id.toLowerCase().includes(needle)
+  })
+
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border/60 bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
+        <span className="tabular-nums">
+          {t('settings.modelsEnabled')}{' '}
+          <span className="font-semibold text-foreground">{items.filter((model) => model.enabled).length}/{items.length}</span>
+          <span className="mx-2 text-border">·</span>
+          {t('settings.modelsLastSynced')} <span className="font-semibold text-foreground">{lastSyncedLabel}</span>
+        </span>
+        <Button size="sm" variant="outline" onClick={onSync} disabled={syncing}>
+          <RefreshCw className={cn('size-3.5', syncing && 'animate-spin')} />
+          {syncing ? t('settings.modelsSyncing') : t('settings.syncUpstreamModels')}
+        </Button>
+      </div>
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+        <div className="relative min-w-0 flex-1">
+          <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            value={query}
+            onChange={(e: ChangeEvent<HTMLInputElement>) => setQuery(e.target.value)}
+            placeholder={t('settings.modelRegistrySearch')}
+            className="h-8 pl-8 font-mono text-xs"
+          />
+        </div>
+        <SegmentedPillGroup
+          className="sm:w-auto"
+          value={category}
+          onChange={setCategory}
+          options={[
+            { value: 'all', label: `${t('settings.modelCategoryAll')} ${items.length}` },
+            { value: 'text', label: `${t('settings.modelCategoryText')} ${items.length - imageCount}` },
+            { value: 'image', label: `${t('settings.modelImage')} ${imageCount}` },
+          ]}
+        />
+      </div>
+      {filtered.length > 0 ? (
+        <div className="grid gap-1.5 sm:grid-cols-2">
+          {filtered.map((model) => (
+            <div
+              key={model.id}
+              className={cn(
+                'flex min-w-0 items-center justify-between gap-2 rounded-lg border border-border/60 bg-background px-3 py-2',
+                !model.enabled && 'opacity-60',
+              )}
+            >
+              <span className="min-w-0 truncate font-mono text-xs font-semibold text-foreground" title={model.id}>
+                {model.id}
+              </span>
+              <div className="flex shrink-0 items-center gap-1">
+                {!model.enabled ? <Badge variant="outline" className="text-[10px]">{t('settings.modelDisabled')}</Badge> : null}
+                {model.pro_only ? <Badge variant="outline" className="text-[10px]">{t('settings.modelProOnly')}</Badge> : null}
+                <ModelSourceBadge source={model.source} />
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="rounded-lg border border-dashed border-border/70 py-10 text-center text-xs text-muted-foreground">
+          {t('settings.modelRegistryEmpty')}
+        </div>
+      )}
+    </div>
   )
 }
 
@@ -2090,6 +2496,7 @@ export default function Settings() {
     { label: t('accounts.codexFingerprintModeOff'), value: 'off' },
     { label: t('accounts.codexFingerprintModeDevice'), value: 'device' },
     { label: t('accounts.codexFingerprintModeSession'), value: 'session' },
+    { label: t('accounts.codexFingerprintModeSessionIdentity'), value: 'single_machine_multi_window' },
     { label: t('accounts.codexFingerprintModeFull'), value: 'full' },
   ]
   const modelCooldownModeOptions = [
@@ -2150,6 +2557,7 @@ export default function Settings() {
       codex_images_main_model: cacheNormalized.codex_images_main_model ?? '',
       codex_telemetry_enabled: cacheNormalized.codex_telemetry_enabled ?? false,
       codex_telemetry_timing_debug: cacheNormalized.codex_telemetry_timing_debug ?? false,
+      codex_unified_client_identity_enabled: cacheNormalized.codex_unified_client_identity_enabled ?? false,
       billing_tier_policy: normalizeBillingTierPolicyValue(cacheNormalized.billing_tier_policy),
       first_token_mode: 'loose',
       models_list_read_max_bytes:
@@ -2197,6 +2605,7 @@ export default function Settings() {
     proxy_pool_enabled: false,
     fast_scheduler_enabled: false,
     scheduler_engine: 'legacy',
+    auto_reset_credits_on_exhaustion_enabled: false,
     auto_reset_credits_enabled: false,
     auto_reset_credits_before_expiry_min: 60,
     auto_activate_5h_window_enabled: false,
@@ -2204,6 +2613,7 @@ export default function Settings() {
     codex_force_websocket: false,
     codex_telemetry_enabled: false,
     codex_telemetry_timing_debug: false,
+    codex_unified_client_identity_enabled: false,
     codex_request_compression: true,
     codex_ws_weak_network_mode: false,
     codex_ws_keepalive_enabled: false,
@@ -2314,6 +2724,7 @@ export default function Settings() {
     billing_tier_policy: 'actual',
     models_list_read_max_bytes: DEFAULT_MODELS_LIST_READ_MAX_BYTES,
     show_full_usage_numbers: false,
+    show_upstream_model_mismatch: true,
     public_key_usage_page_enabled: true,
     public_image_studio_page_enabled: true,
     public_account_portal_page_enabled: false,
@@ -2366,6 +2777,9 @@ export default function Settings() {
   const [syncedCliVersion, setSyncedCliVersion] = useState('')
   // 实际用于出站 UA 的版本(内置与同步取大);「设为同步版本」按钮以它为准,同步值过期/为空时不会把门槛设低
   const [effectiveCliVersion, setEffectiveCliVersion] = useState('')
+  const [syncedAppBuilds, setSyncedAppBuilds] = useState({ desktop_mac: '', desktop_windows: '', vscode: '' })
+  const [clientSyncErrors, setClientSyncErrors] = useState<Partial<Record<CodexClientSyncSource, string>>>({})
+  const [codexClientVersions, setCodexClientVersions] = useState<CodexClientVersionTarget[]>([])
   const logoFileInputRef = useRef<HTMLInputElement>(null)
   const backgroundFileInputRef = useRef<HTMLInputElement>(null)
   const persistedBrandingRef = useRef<Partial<SiteBranding> | null>(null)
@@ -2655,6 +3069,12 @@ export default function Settings() {
     setLoadedAdminSecret(settings.admin_secret ?? '')
     setSyncedCliVersion(settings.codex_synced_cli_version ?? '')
     setEffectiveCliVersion(settings.codex_effective_cli_version ?? '')
+    setSyncedAppBuilds({
+      desktop_mac: settings.codex_synced_desktop_mac_build ?? '',
+      desktop_windows: settings.codex_synced_desktop_windows_build ?? '',
+      vscode: settings.codex_synced_vscode_build ?? '',
+    })
+    setCodexClientVersions(settings.codex_client_versions ?? [])
     setModelList(modelsResp.models ?? [])
     setModelItems(modelsResp.items ?? [])
     setModelsLastSyncedAt(modelsResp.last_synced_at)
@@ -2827,14 +3247,30 @@ export default function Settings() {
 
   const handleSyncCliVersion = async () => {
     setSyncingCliVersion(true)
+    setClientSyncErrors({})
     try {
-      const result = await api.syncCodexCLIVersion()
-      setSyncedCliVersion(result.effective_version)
-      setEffectiveCliVersion(result.effective_version)
-      showToast(t('settings.cliVersionSyncSuccess', {
-        version: result.effective_version,
-        fetched: result.fetched_version || '-',
-      }))
+      const result = await api.syncCodexClientVersions()
+      setSyncedCliVersion(result.cli.synced_version || '')
+      setEffectiveCliVersion(result.cli.effective_version)
+      setSyncedAppBuilds({
+        desktop_mac: result.desktop_mac.effective_version,
+        desktop_windows: result.desktop_windows.effective_version,
+        vscode: result.vscode.effective_version,
+      })
+      const errors: Partial<Record<CodexClientSyncSource, string>> = {}
+      for (const source of CODEX_CLIENT_SYNC_SOURCES) {
+        const error = result[source.key].error
+        if (error) errors[source.key] = error
+      }
+      setClientSyncErrors(errors)
+      try {
+        const settings = await api.getSettings()
+        setCodexClientVersions(overlayCodexClientSyncFailures(settings.codex_client_versions ?? [], result))
+      } catch {
+        // 同步本身已成功；面板沿用旧数据，下次加载设置时刷新。
+      }
+      const failed = Object.keys(errors).length > 0
+      showToast(failed ? t('settings.clientVersionSyncPartial') : t('settings.clientVersionSyncSuccess'), failed ? 'error' : 'success')
     } catch (error) {
       showToast(`${t('settings.cliVersionSyncFailed')}: ${getErrorMessage(error)}`, 'error')
     } finally {
@@ -2885,7 +3321,7 @@ export default function Settings() {
       category: id.includes('image') ? 'image' : 'codex',
       source: 'builtin',
       pro_only: id === 'gpt-5.3-codex-spark',
-      api_key_auth_available: !['gpt-5.5', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-6-astra'].includes(id),
+      api_key_auth_available: !['gpt-5.5', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-6-astra', 'gpt-6-sol', 'gpt-6-luna'].includes(id),
     }))
   }, [modelItems, modelList])
   const codexModelOptions = visibleModelItems
@@ -2904,7 +3340,6 @@ export default function Settings() {
       !model.id.includes(')')
     )
     .map((model) => ({ label: model.id, value: model.id }))
-  const enabledModelCount = visibleModelItems.filter((model) => model.enabled).length
   const imagesDefaultMainModel = settingsForm.codex_images_default_main_model || 'gpt-5.6-luna'
   const imagesMainModelOptions = [
     { value: '', label: t('settings.codexImagesDefault', { model: imagesDefaultMainModel }) },
@@ -2915,22 +3350,33 @@ export default function Settings() {
   }
   const modelsLastSyncedLabel = modelsLastSyncedAt ? formatBeijingTime(modelsLastSyncedAt) : t('settings.modelsNeverSynced')
   const modelsSourceLabel = modelsSourceURL || 'https://developers.openai.com/codex/models'
-  const anthropicMappingCount = useMemo(
-    () => parseModelMappingEntries(settingsForm.model_mapping, defaultClaudeModelMappingEntries).length,
+  const anthropicMappingEntries = useMemo(
+    () => parseModelMappingEntries(settingsForm.model_mapping, defaultClaudeModelMappingEntries),
     [defaultClaudeModelMappingEntries, settingsForm.model_mapping],
   )
-  const codexMappingCount = useMemo(
-    () => parseModelMappingEntries(settingsForm.codex_model_mapping).length,
+  const codexMappingEntries = useMemo(
+    () => parseModelMappingEntries(settingsForm.codex_model_mapping),
     [settingsForm.codex_model_mapping],
   )
-  const reasoningEffortCount = useMemo(
-    () => parseReasoningEffortModelEntries(settingsForm.reasoning_effort_models).length,
+  const reasoningEffortAliases = useMemo(
+    () => parseReasoningEffortModelEntries(settingsForm.reasoning_effort_models).map(reasoningEffortAlias).filter(Boolean),
     [settingsForm.reasoning_effort_models],
   )
   const payloadRuleCount = useMemo(
     () => countPayloadRules(settingsForm.payload_rules),
     [settingsForm.payload_rules],
   )
+  const payloadRuleGroupLabels = useMemo(() => {
+    try {
+      const parsed = JSON.parse(settingsForm.payload_rules || '{}') as Record<string, unknown>
+      return PAYLOAD_RULE_GROUPS.flatMap((group) => {
+        const rules = parsed[group]
+        return Array.isArray(rules) && rules.length > 0 ? [`${group} ×${rules.length}`] : []
+      })
+    } catch {
+      return []
+    }
+  }, [settingsForm.payload_rules])
   const showInitialSkeleton = loading && !health
   const codexUserAgentConfig = useMemo(
     () => parseCodexUserAgentConfig(settingsForm.codex_user_agent_config),
@@ -2979,6 +3425,7 @@ export default function Settings() {
         })
         .catch((err: unknown) => {
           if (cancelled) return
+          setCodexUAPreview(null)
           setCodexUAPreviewError(err instanceof Error ? err.message : String(err))
         })
     }, 250)
@@ -2986,13 +3433,14 @@ export default function Settings() {
       cancelled = true
       window.clearTimeout(timer)
     }
-  }, [settingsForm.codex_user_agent_config, settingsForm.client_compat_mode, settingsForm.codex_min_cli_version])
+  }, [settingsForm.codex_user_agent_config, settingsForm.client_compat_mode, settingsForm.codex_min_cli_version, codexClientVersions])
   const codexUAMode: 'single' | 'pool' = codexUserAgentConfig.mode === 'pool' ? 'pool' : 'single'
   const codexUAKind: CodexUAKind = CODEX_UA_KINDS.includes(codexUserAgentConfig.client_kind as CodexUAKind)
     ? (codexUserAgentConfig.client_kind as CodexUAKind)
     : inferCodexUAKind(codexUserAgentConfig.client_name)
   const codexUAKindSpec = codexUACatalog?.kinds.find((kind) => kind.kind === codexUAKind) ?? null
   const codexUAAppFollowsCLI = codexUAKindSpec ? codexUAKindSpec.app_follows_cli : codexUAKind === 'codex-tui' || codexUAKind === 'codex-exec'
+  const codexUARawActive = Boolean(codexUserAgentConfig.raw_user_agent?.trim())
   const codexUADefaultPoolMix = codexUACatalog?.default_pool_mix ?? CODEX_UA_FALLBACK_POOL_MIX
   const codexUAKindLabel = useCallback((kind: CodexUAKind) => {
     switch (kind) {
@@ -3027,7 +3475,23 @@ export default function Settings() {
       label: `${platform.os_name} ${platform.os_version} · ${platform.arch}`,
       value: codexUAPlatformKey(platform.os_name, platform.os_version, platform.arch),
     }))
-    return [...options, { label: t('settings.codexUACustomOption'), value: 'custom' }]
+    const referenceOptions = (codexUAKindSpec?.reference_platforms ?? []).map((platform) => {
+      const name = `${platform.os_name} ${platform.os_version} · ${platform.arch}`
+      return {
+        label: `${name} · ${t('settings.codexUAReference')}`,
+        value: codexUAPlatformKey(platform.os_name, platform.os_version, platform.arch),
+        triggerLabel: name,
+        content: (
+          <span className="flex items-start gap-2">
+            <span className="min-w-0 flex-1 break-all">{name}</span>
+            <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium leading-none text-muted-foreground">
+              {t('settings.codexUAReference')}
+            </span>
+          </span>
+        ),
+      }
+    })
+    return [...referenceOptions, ...options, { label: t('settings.codexUACustomOption'), value: 'custom' }]
   }, [codexUAKindSpec, t])
   const codexUAEffectivePlatform = {
     os_name: (codexUserAgentConfig.os_name ?? '').trim() || codexUAKindSpec?.default_platform.os_name || DEFAULT_CODEX_UA_CONFIG.os_name,
@@ -3045,6 +3509,19 @@ export default function Settings() {
   }, [patchAndSaveCodexUserAgentConfig])
   const codexUATerminalOptions = useMemo(() => [
     ...(codexUAKindSpec?.terminals ?? []).map((terminal) => ({ label: terminal.value, value: terminal.value })),
+    ...(codexUAKindSpec?.reference_terminals ?? []).map((terminal) => ({
+      label: `${terminal} · ${t('settings.codexUAReference')}`,
+      value: terminal,
+      triggerLabel: terminal,
+      content: (
+        <span className="flex items-start gap-2">
+          <span className="min-w-0 flex-1 break-all">{terminal}</span>
+          <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium leading-none text-muted-foreground">
+            {t('settings.codexUAReference')}
+          </span>
+        </span>
+      ),
+    })),
     { label: t('settings.codexUACustomOption'), value: 'custom' },
   ], [codexUAKindSpec, t])
   const codexUAEffectiveTerminal = (codexUserAgentConfig.terminal ?? '').trim() || codexUAKindSpec?.default_terminal || DEFAULT_CODEX_UA_CONFIG.terminal
@@ -3056,13 +3533,13 @@ export default function Settings() {
   const codexUAEffectiveAppName = (codexUserAgentConfig.app_name ?? '').trim() || codexUAKindSpec?.default_app_name || (codexUserAgentConfig.client_name ?? '').trim() || DEFAULT_CODEX_UA_CONFIG.client_name
   const codexUAAppNamePresetValue = codexUAAppNameOptions.some((option) => option.value === codexUAEffectiveAppName && option.value !== 'custom') ? codexUAEffectiveAppName : 'custom'
   const codexUAShowAppNamePreset = codexUAKind !== 'custom' && !codexUAAppFollowsCLI && (codexUAKindSpec?.app_names?.length ?? 0) > 1
-  const codexUAClientVersionPlaceholder = (() => {
-    const pairs = codexUAKindSpec?.version_pairs ?? []
-    if (pairs.length > 0) {
-      return pairs.reduce((best, pair) => (pair.weight > best.weight ? pair : best), pairs[0]).cli_version
-    }
-    return settingsForm.codex_synced_cli_version || DEFAULT_CODEX_UA_CONFIG.client_version
-  })()
+  // 默认版本取后端预览，与出站使用相同的配对选择器。
+  const codexUAClientVersionPlaceholder = codexUAPreviewError
+    ? t('settings.codexClientVersions.unavailable')
+    : codexUAPreview?.persona?.version || t('settings.codexUAPreviewLoading')
+  const codexUAAppVersionPlaceholder = codexUAPreviewError
+    ? t('settings.codexClientVersions.unavailable')
+    : codexUAPreview?.persona?.app_version || t('settings.codexUAAutoPaired')
   const codexUAPoolMixValue = (kind: CodexUAKind) => {
     const weight = codexUserAgentConfig.pool_mix?.[kind]
     return weight === undefined ? '' : String(weight)
@@ -3092,6 +3569,11 @@ export default function Settings() {
     commitSettingsForm(persistedSettings)
     setResponseCacheValidationError(null)
   }, [commitSettingsForm, persistedSettings])
+  const dirtyKeySet = useMemo(() => new Set(dirtyKeys), [dirtyKeys])
+  const discardSettingsField = useCallback((field: keyof SystemSettings) => {
+    if (!persistedSettings) return
+    setSettingsForm((form) => ({ ...form, [field]: persistedSettings[field] }))
+  }, [persistedSettings])
   // 有未保存改动时保存按钮才是主色；没改动也保留可点，脏检查漏判时用户仍能强制保存。
   const renderSaveButton = (className?: string) => (
     <Button
@@ -3122,6 +3604,23 @@ export default function Settings() {
   const tabParam = searchParams.get('tab')
   const activeTab: SettingsTabKey = isSettingsTabKey(tabParam) ? tabParam : DEFAULT_SETTINGS_TAB
   const [modelPanel, setModelPanel] = useState<ModelPanelKey | null>(null)
+  const modelPanelMeta = (() => {
+    switch (modelPanel) {
+      case 'registry':
+        return { title: t('settings.modelRegistry'), description: t('settings.modelRegistryDesc'), icon: <Layers />, count: visibleModelItems.length }
+      case 'anthropic':
+        return { title: t('settings2.anthropicModelMapping'), description: t('settings2.anthropicModelMappingDesc'), icon: <ChannelLogo channel="claude" size={16} />, count: anthropicMappingEntries.length }
+      case 'codex':
+        return { title: t('settings2.codexModelMapping'), description: t('settings2.codexModelMappingDesc'), icon: <Shuffle />, count: codexMappingEntries.length }
+      case 'reasoning':
+        return { title: t('settings2.reasoningEffortModels'), description: t('settings2.reasoningEffortModelsDesc'), icon: <Brain />, count: reasoningEffortAliases.length }
+      default:
+        return null
+    }
+  })()
+  const modelPanelField = modelPanel && modelPanel !== 'registry' ? MODEL_PANEL_FIELDS[modelPanel] : null
+  const modelPanelDirty = modelPanelField ? dirtyKeySet.has(modelPanelField) : false
+  const modelPanelOtherDirtyCount = dirtyCount - (modelPanelDirty ? 1 : 0)
   const settingsNavRef = useRef<HTMLElement | null>(null)
 
   // 切换 Tab 后要定位的 section id：面板内容在下一次渲染才挂载，滚动动作放到 effect 里。
@@ -3390,6 +3889,17 @@ export default function Settings() {
                 icon={<RefreshCw className="size-4" />}
               >
                 <div className={cn(SETTINGS_SWITCH_GRID, 'items-stretch')}>
+                  <SettingField
+                    label={t('settings.autoResetCreditsOnExhaustionEnabled')}
+                    description={t('settings.autoResetCreditsOnExhaustionDesc')}
+                    layout="switch"
+                    className="h-full"
+                  >
+                    <Switch
+                      checked={settingsForm.auto_reset_credits_on_exhaustion_enabled}
+                      onCheckedChange={(checked) => autoSaveBooleanField('auto_reset_credits_on_exhaustion_enabled', checked)}
+                    />
+                  </SettingField>
                   <SettingField
                     label={t('settings.autoResetCreditsEnabled')}
                     description={t('settings.autoResetCreditsEnabledDesc')}
@@ -4031,9 +4541,92 @@ export default function Settings() {
               </SettingsSection>
 
               <SettingsSection id="settings-codex-client" title={t('settings.nav.codexClient')} description={t('settings.nav.codexClientDesc')} icon={<Terminal className="size-4" />}>
-              <SettingsCard title={t('settings.codexClientTitle')} description={t('settings.codexClientDesc')} icon={<Terminal className="size-4" />}>
+              <SettingsCard title={t('settings.codexClientVersionCardTitle')} description={t('settings.codexClientVersionCardDesc')} icon={<RefreshCw className="size-4" />}>
                 <div className="space-y-4">
-                  <div className={SETTINGS_FIELD_GRID_3}>
+                  <div className="overflow-hidden rounded-xl border border-border/60">
+                    <div className="grid grid-cols-2 gap-px bg-border/60 lg:grid-cols-4">
+                      {CODEX_CLIENT_SYNC_SOURCES.map((source) => {
+                        const version = source.key === 'cli' ? effectiveCliVersion : syncedAppBuilds[source.key]
+                        const error = clientSyncErrors[source.key]
+                        return (
+                          <div key={source.key} className="min-w-0 bg-card px-3.5 py-3">
+                            <div className="flex items-center gap-1.5 text-[11px] font-medium text-muted-foreground">
+                              <span
+                                aria-hidden="true"
+                                className={cn('size-1.5 shrink-0 rounded-full', error ? 'bg-destructive' : version ? 'bg-emerald-500' : 'bg-muted-foreground/40')}
+                              />
+                              <span className="truncate">{source.label}</span>
+                            </div>
+                            <div
+                              className={cn(
+                                'mt-1 truncate font-mono text-sm font-semibold tabular-nums',
+                                version ? 'text-foreground' : 'text-muted-foreground',
+                                syncingCliVersion && 'motion-safe:animate-pulse',
+                              )}
+                            >
+                              {version || t('settings.clientVersionNotSynced')}
+                            </div>
+                            {error ? (
+                              <p className="mt-1 line-clamp-2 break-all text-[11px] leading-snug text-destructive" title={error}>
+                                {t('settings.clientVersionSyncKept')} · {error}
+                              </p>
+                            ) : null}
+                          </div>
+                        )
+                      })}
+                    </div>
+                    <div className="flex flex-col gap-3 border-t border-border/60 bg-muted/20 px-3.5 py-2.5 sm:flex-row sm:items-center sm:justify-between">
+                      <div className="flex flex-wrap items-center gap-x-6 gap-y-2.5">
+                        <div className="flex items-center gap-2">
+                          <label className="flex cursor-pointer items-center gap-2">
+                            <Switch
+                              checked={settingsForm.codex_cli_version_sync_enabled}
+                              onCheckedChange={(checked) => autoSaveBooleanField('codex_cli_version_sync_enabled', checked)}
+                            />
+                            <span className="text-[13px] font-medium text-foreground">{t('settings.codexCliVersionAutoSync')}</span>
+                          </label>
+                          <SettingHelp text={t('settings.codexCliVersionAutoSyncDesc')} />
+                        </div>
+                        <div className={cn('flex items-center gap-2 transition-opacity', !settingsForm.codex_cli_version_sync_enabled && 'opacity-50')}>
+                          <span className="text-[13px] text-muted-foreground">{t('settings.codexCliVersionSyncInterval')}</span>
+                          <SettingHelp text={t('settings.codexCliVersionSyncIntervalDesc')} />
+                          <div className="relative w-[6.5rem] shrink-0">
+                            <DraftNumberInput
+                              min={1}
+                              max={720}
+                              aria-label={t('settings.codexCliVersionSyncInterval')}
+                              className="h-8 pr-10 tabular-nums"
+                              disabled={!settingsForm.codex_cli_version_sync_enabled}
+                              value={settingsForm.codex_cli_version_sync_interval_hours}
+                              onValueChange={(value) =>
+                                setSettingsForm((f) => ({
+                                  ...f,
+                                  codex_cli_version_sync_interval_hours: value,
+                                }))
+                              }
+                              onValueCommit={(value) => {
+                                if (!settingsForm.codex_cli_version_sync_enabled) return
+                                void autoSaveSettingsPatch({
+                                  codex_cli_version_sync_interval_hours: value,
+                                })
+                              }}
+                            />
+                            <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[11px] font-medium text-muted-foreground">
+                              {t('settings.unit.hour')}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                      <Button size="sm" variant="outline" className="shrink-0 self-start sm:self-auto" onClick={() => void handleSyncCliVersion()} disabled={syncingCliVersion}>
+                        <RefreshCw className={cn('size-3.5', syncingCliVersion && 'animate-spin')} />
+                        {syncingCliVersion ? t('settings.cliVersionSyncing') : t('settings.cliVersionSyncNow')}
+                      </Button>
+                    </div>
+                  </div>
+                  <div className="rounded-lg border border-border/60 p-3">
+                    <CodexClientVersionsPanel targets={codexClientVersions} />
+                  </div>
+                  <div className={SETTINGS_FIELD_GRID}>
                     <SettingField label={t('settings.clientCompatMode')} description={t('settings.clientCompatModeDesc')}>
                       <SegmentedPillGroup
                         value={settingsForm.client_compat_mode}
@@ -4044,7 +4637,7 @@ export default function Settings() {
                     <SettingField label={t('settings.codexMinCliVersion')} description={t('settings.codexMinCliVersionDesc')}>
                       <div className="flex items-center gap-2">
                         <Input
-                          className="min-w-0 flex-1"
+                          className="min-w-0 flex-1 font-mono tabular-nums"
                           value={settingsForm.codex_min_cli_version}
                           onChange={(e: ChangeEvent<HTMLInputElement>) => setSettingsForm(f => ({ ...f, codex_min_cli_version: e.target.value }))}
                         />
@@ -4061,22 +4654,43 @@ export default function Settings() {
                         </Button>
                       </div>
                     </SettingField>
-                    <SettingField label={t('settings.codexCliVersionSync')} description={t('settings.codexCliVersionSyncDesc')}>
-                      <div className="flex items-center gap-2">
-                        <Button size="sm" variant="outline" onClick={() => void handleSyncCliVersion()} disabled={syncingCliVersion}>
-                          <RefreshCw className={cn('size-3.5', syncingCliVersion && 'animate-spin')} />
-                          {syncingCliVersion ? t('settings.cliVersionSyncing') : t('settings.cliVersionSyncNow')}
-                        </Button>
-                        {syncedCliVersion && (
-                          <span className="font-mono text-xs text-muted-foreground">{syncedCliVersion}</span>
-                        )}
-                      </div>
-                    </SettingField>
+                  </div>
+                </div>
+              </SettingsCard>
+
+              <SettingsCard title={t('settings.codexConnectionCardTitle')} description={t('settings.codexConnectionCardDesc')} icon={<Fingerprint className="size-4" />}>
+                <div className={SETTINGS_FIELD_GRID}>
+                  <SettingField label={t('settings.codexFingerprintDefaultMode')} description={t('settings.codexFingerprintDefaultModeDesc')}>
+                    <Select
+                      value={settingsForm.codex_fingerprint_default_mode || 'off'}
+                      onValueChange={(value) => autoSaveStringField('codex_fingerprint_default_mode', value)}
+                      options={codexFingerprintDefaultModeOptions}
+                    />
+                  </SettingField>
+                  <SettingField label={t('settings.utlsShutdownTimeout')} description={t('settings.utlsShutdownTimeoutDesc')} suffix={t('settings.unit.min')}>
+                    <DraftNumberInput
+                      min={1}
+                      max={240}
+                      className="tabular-nums"
+                      value={settingsForm.utls_shutdown_timeout_minutes}
+                      onValueChange={(value) => setSettingsForm(f => ({ ...f, utls_shutdown_timeout_minutes: value }))}
+                      onValueCommit={(value) => {
+                        void autoSaveSettingsPatch({
+                          utls_shutdown_timeout_minutes: value,
+                        })
+                      }}
+                    />
+                  </SettingField>
+                </div>
+                <div className="mt-4 border-t border-border/60 pt-4">
+                  <div className={SETTINGS_ROW_LIST}>
                     <SettingField
                       label={t('settings.codexTelemetry')}
                       description={t('settings.codexTelemetryDesc')}
+                      layout="row"
                     >
                       <Switch
+                        aria-label={t('settings.codexTelemetry')}
                         checked={settingsForm.codex_telemetry_enabled}
                         onCheckedChange={(checked) => autoSaveBooleanField('codex_telemetry_enabled', checked)}
                       />
@@ -4084,259 +4698,234 @@ export default function Settings() {
                     <SettingField
                       label={t('settings.codexTelemetryTiming')}
                       description={t('settings.codexTelemetryTimingDesc')}
+                      layout="row"
                     >
                       <Switch
+                        aria-label={t('settings.codexTelemetryTiming')}
                         checked={settingsForm.codex_telemetry_timing_debug}
                         onCheckedChange={(checked) => autoSaveBooleanField('codex_telemetry_timing_debug', checked)}
                       />
                     </SettingField>
-                    {/* CLI 版本自动同步：开关 + 间隔成对横排，行高一致 */}
-                    <div className="sm:col-span-2 grid gap-0 overflow-hidden rounded-lg border border-border/60 bg-muted/15 sm:grid-cols-2 sm:divide-x sm:divide-border/60">
-                      <div className="flex min-h-[48px] items-center justify-between gap-3 px-3 py-2.5">
-                        <div className="flex min-w-0 items-center gap-1.5">
-                          <span className="text-[13px] font-medium leading-snug text-foreground sm:text-sm">
-                            {t('settings.codexCliVersionAutoSync')}
-                          </span>
-                          <SettingHelp text={t('settings.codexCliVersionAutoSyncDesc')} />
-                        </div>
-                        <Switch
-                          checked={settingsForm.codex_cli_version_sync_enabled}
-                          onCheckedChange={(checked) => autoSaveBooleanField('codex_cli_version_sync_enabled', checked)}
-                        />
-                      </div>
-                      <div
-                        className={cn(
-                          'flex min-h-[48px] items-center justify-between gap-3 border-t border-border/60 px-3 py-2.5 sm:border-t-0',
-                          !settingsForm.codex_cli_version_sync_enabled && 'opacity-60',
-                        )}
-                      >
-                        <div className="flex min-w-0 items-center gap-1.5">
-                          <span className="text-[13px] font-medium leading-snug text-foreground sm:text-sm">
-                            {t('settings.codexCliVersionSyncInterval')}
-                          </span>
-                          <SettingHelp text={t('settings.codexCliVersionSyncIntervalDesc')} />
-                        </div>
-                        <div className="relative w-[7.25rem] shrink-0">
-                          <DraftNumberInput
-                            min={1}
-                            max={720}
-                            className="h-9 pr-10 tabular-nums"
-                            disabled={!settingsForm.codex_cli_version_sync_enabled}
-                            value={settingsForm.codex_cli_version_sync_interval_hours}
-                            onValueChange={(value) =>
-                              setSettingsForm((f) => ({
-                                ...f,
-                                codex_cli_version_sync_interval_hours: value,
-                              }))
-                            }
-                            onValueCommit={(value) => {
-                              if (!settingsForm.codex_cli_version_sync_enabled) return
-                              void autoSaveSettingsPatch({
-                                codex_cli_version_sync_interval_hours: value,
-                              })
-                            }}
-                          />
-                          <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[11px] font-medium text-muted-foreground">
-                            {t('settings.unit.hour')}
-                          </span>
-                        </div>
-                      </div>
-                    </div>
-                    <SettingField label={t('settings.utlsShutdownTimeout')} description={t('settings.utlsShutdownTimeoutDesc')}>
-                      <div className="relative">
-                        <DraftNumberInput
-                          min={1}
-                          max={240}
-                          className="pr-12 tabular-nums"
-                          value={settingsForm.utls_shutdown_timeout_minutes}
-                          onValueChange={(value) => setSettingsForm(f => ({ ...f, utls_shutdown_timeout_minutes: value }))}
-                          onValueCommit={(value) => {
-                            void autoSaveSettingsPatch({
-                              utls_shutdown_timeout_minutes: value,
-                            })
-                          }}
-                        />
-                        <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[11px] font-medium text-muted-foreground">
-                          {t('settings.unit.min')}
-                        </span>
-                      </div>
-                    </SettingField>
-                    <SettingField label={t('settings.codexFingerprintDefaultMode')} description={t('settings.codexFingerprintDefaultModeDesc')}>
-                      <Select
-                        value={settingsForm.codex_fingerprint_default_mode || 'off'}
-                        onValueChange={(value) => autoSaveStringField('codex_fingerprint_default_mode', value)}
-                        options={codexFingerprintDefaultModeOptions}
-                      />
-                    </SettingField>
-                    <SettingField className="sm:col-span-2 xl:col-span-3" label={t('settings.codexUAMode')} description={t('settings.codexUAModeDesc')}>
+                  </div>
+                </div>
+              </SettingsCard>
+
+              <SettingsCard title={t('settings.codexClientTitle')} description={t('settings.codexClientDesc')} icon={<Terminal className="size-4" />}>
+                <div className="space-y-4">
+                  <div className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,15rem)_minmax(0,1fr)]">
+                    <SettingField label={t('settings.codexUAMode')} description={t('settings.codexUAModeDesc')}>
                       <SegmentedPillGroup
-                        className="max-w-sm"
                         value={codexUAMode}
                         onChange={(value) => patchAndSaveCodexUserAgentConfig({ mode: value === 'pool' ? 'pool' : '' })}
                         options={codexUAModeOptions}
                       />
                     </SettingField>
-                    {codexUAMode === 'pool' ? (
-                      CODEX_UA_POOL_KINDS.map((kind) => (
+                    {codexUAMode === 'pool' ? null : (
+                      <SettingField label={t('settings.codexUAKind')} description={t('settings.codexUAKindDesc')}>
+                        <div className="overflow-x-auto">
+                          <SegmentedPillGroup
+                            className="min-w-max"
+                            value={codexUAKind}
+                            onChange={selectCodexUAKind}
+                            options={codexUAKindOptions}
+                          />
+                        </div>
+                      </SettingField>
+                    )}
+                  </div>
+                  {codexUAMode === 'pool' ? (
+                    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+                      {CODEX_UA_POOL_KINDS.map((kind) => (
                         <SettingField key={kind} label={`${t('settings.codexUAPoolMix')} · ${codexUAKindLabel(kind)}`} description={t('settings.codexUAPoolMixDesc')}>
                           <Input
                             type="number"
                             min={0}
                             step={1}
                             inputMode="numeric"
+                            className="tabular-nums"
                             value={codexUAPoolMixValue(kind)}
                             placeholder={String(codexUADefaultPoolMix[kind] ?? 0)}
                             onChange={(e: ChangeEvent<HTMLInputElement>) => updateCodexUAPoolMix(kind, e.target.value)}
                             onBlur={saveCodexUserAgentConfig}
                           />
                         </SettingField>
-                      ))
+                      ))}
+                    </div>
+                  ) : null}
+                  <div className="min-w-0 rounded-xl border border-primary/15 bg-primary/[0.03] px-3.5 py-3">
+                    <div className="mb-2 flex items-center gap-1.5 text-[13px] font-semibold text-foreground">
+                      <Eye className="size-3.5 text-primary" aria-hidden="true" />
+                      {codexUAMode === 'pool' ? t('settings.codexUAPoolPreview') : t('settings.codexUAPreview')}
+                    </div>
+                    {codexUAPreviewError ? (
+                      <div className="break-all text-[11px] leading-5 text-destructive">{codexUAPreviewError}</div>
+                    ) : !codexUAPreview ? (
+                      <div className="text-[11px] leading-5 text-muted-foreground">{t('settings.codexUAPreviewLoading')}</div>
+                    ) : codexUAPreview.persona ? (
+                      <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-1 font-mono text-[11px] leading-5 text-muted-foreground sm:text-xs">
+                        <dt className="text-foreground/70">User-Agent</dt>
+                        <dd className="break-all text-foreground">{codexUAPreview.persona.user_agent}</dd>
+                        <dt className="text-foreground/70">Originator</dt>
+                        <dd className="break-all">{codexUAPreview.persona.originator}</dd>
+                        <dt className="text-foreground/70">Version</dt>
+                        <dd className="break-all">{codexUAPreview.persona.version}</dd>
+                        <dt className="text-foreground/70">{t('settings.codexClientVersions.source')}</dt>
+                        <dd>{t(`settings.codexClientVersions.sources.${codexUAPreview.persona.source ?? 'builtin_observed'}`, { defaultValue: codexUAPreview.persona.source ?? 'builtin_observed' })}</dd>
+                      </dl>
                     ) : (
-                      <>
-                        <SettingField className="sm:col-span-2 xl:col-span-3" label={t('settings.codexUAKind')} description={t('settings.codexUAKindDesc')}>
-                          <SegmentedPillGroup
-                            className="max-w-3xl"
-                            value={codexUAKind}
-                            onChange={selectCodexUAKind}
-                            options={codexUAKindOptions}
-                          />
-                        </SettingField>
-                        <SettingField className="sm:col-span-2 xl:col-span-3" label={t('settings.codexUserAgentRaw')} description={t('settings.codexUserAgentRawDesc')}>
-                          <Input
-                            className="font-mono text-xs"
-                            value={codexUserAgentConfig.raw_user_agent ?? ''}
-                            placeholder="codex-tui/0.153.3 (Linux Unknown; x86_64) xterm-256color (codex-tui; 0.153.3)"
-                            onChange={(e: ChangeEvent<HTMLInputElement>) => updateCodexUserAgentConfig({ raw_user_agent: e.target.value })}
-                            onBlur={saveCodexUserAgentConfig}
-                          />
-                        </SettingField>
-                        <SettingField label={t('settings.codexUAClientName')} description={t('settings.codexUAClientNameDesc')}>
-                          <Input
-                            value={codexUserAgentConfig.client_name ?? ''}
-                            placeholder={codexUAKindSpec?.client_name ?? DEFAULT_CODEX_UA_CONFIG.client_name}
-                            disabled={codexUAKind !== 'custom'}
-                            onChange={(e: ChangeEvent<HTMLInputElement>) => updateCodexUserAgentConfig({ client_name: e.target.value })}
-                            onBlur={saveCodexUserAgentConfig}
-                          />
-                        </SettingField>
-                        <SettingField label={t('settings.codexUAClientVersion')} description={t('settings.codexUAClientVersionDesc')}>
-                          <Input
-                            value={codexUserAgentConfig.client_version ?? ''}
-                            placeholder={codexUAClientVersionPlaceholder}
-                            onChange={(e: ChangeEvent<HTMLInputElement>) => updateCodexUserAgentConfig({ client_version: e.target.value })}
-                            onBlur={saveCodexUserAgentConfig}
-                          />
-                        </SettingField>
-                        <SettingField label={t('settings.codexUAPlatformPreset')} description={t('settings.codexUAPlatformPresetDesc')}>
-                          <Select
-                            value={codexUAPlatformPresetValue}
-                            onValueChange={applyCodexUAPlatformPreset}
-                            options={codexUAPlatformOptions}
-                          />
-                        </SettingField>
-                        <SettingField label={t('settings.codexUAOSName')} description={t('settings.codexUAOSNameDesc')}>
-                          <Input
-                            value={codexUserAgentConfig.os_name ?? ''}
-                            placeholder={codexUAKindSpec?.default_platform.os_name ?? DEFAULT_CODEX_UA_CONFIG.os_name}
-                            onChange={(e: ChangeEvent<HTMLInputElement>) => updateCodexUserAgentConfig({ os_name: e.target.value })}
-                            onBlur={saveCodexUserAgentConfig}
-                          />
-                        </SettingField>
-                        <SettingField label={t('settings.codexUAOSVersion')} description={t('settings.codexUAOSVersionDesc')}>
-                          <Input
-                            value={codexUserAgentConfig.os_version ?? ''}
-                            placeholder={codexUAKindSpec?.default_platform.os_version ?? DEFAULT_CODEX_UA_CONFIG.os_version}
-                            onChange={(e: ChangeEvent<HTMLInputElement>) => updateCodexUserAgentConfig({ os_version: e.target.value })}
-                            onBlur={saveCodexUserAgentConfig}
-                          />
-                        </SettingField>
-                        <SettingField label={t('settings.codexUAArch')} description={t('settings.codexUAArchDesc')}>
-                          <Input
-                            value={codexUserAgentConfig.arch ?? ''}
-                            placeholder={codexUAKindSpec?.default_platform.arch ?? DEFAULT_CODEX_UA_CONFIG.arch}
-                            onChange={(e: ChangeEvent<HTMLInputElement>) => updateCodexUserAgentConfig({ arch: e.target.value })}
-                            onBlur={saveCodexUserAgentConfig}
-                          />
-                        </SettingField>
-                        <SettingField label={t('settings.codexUATerminalPreset')} description={t('settings.codexUATerminalPresetDesc')}>
-                          <Select
-                            value={codexUATerminalPresetValue}
-                            onValueChange={(value) => { if (value !== 'custom') patchAndSaveCodexUserAgentConfig({ terminal: value }) }}
-                            options={codexUATerminalOptions}
-                          />
-                        </SettingField>
-                        <SettingField label={t('settings.codexUATerminal')} description={t('settings.codexUATerminalDesc')}>
-                          <Input
-                            value={codexUserAgentConfig.terminal ?? ''}
-                            placeholder={codexUAKindSpec?.default_terminal ?? DEFAULT_CODEX_UA_CONFIG.terminal}
-                            onChange={(e: ChangeEvent<HTMLInputElement>) => updateCodexUserAgentConfig({ terminal: e.target.value })}
-                            onBlur={saveCodexUserAgentConfig}
-                          />
-                        </SettingField>
-                        <SettingField label={t('settings.codexUAAppName')} description={t('settings.codexUAAppNameDesc')}>
-                          <div className="space-y-2">
-                            {codexUAShowAppNamePreset ? (
-                              <Select
-                                value={codexUAAppNamePresetValue}
-                                onValueChange={(value) => { if (value !== 'custom') patchAndSaveCodexUserAgentConfig({ app_name: value }) }}
-                                options={codexUAAppNameOptions}
-                              />
-                            ) : null}
+                      <ul className="space-y-1 font-mono text-[11px] leading-5 text-muted-foreground sm:text-xs">
+                        {(codexUAPreview.samples ?? []).map((sample) => (
+                          <li key={`${sample.label}-${sample.account_id ?? 0}`} className="break-all">
+                            <span className="text-foreground/70">{sample.label}{sample.account_id ? ` · ${sample.account_id}` : ''}</span>
+                            {' '}<span className="text-foreground">{sample.user_agent}</span>
+                            <span className="text-foreground/50">{' · '}{sample.originator}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                    {codexUAPreview?.warnings?.length ? (
+                      <div className="mt-2 flex items-start gap-1.5 text-[11px] leading-5 text-amber-600 dark:text-amber-400">
+                        <CircleAlert className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
+                        <span>{t('settings.codexUAWarnUnseen', { fields: codexUAPreview.warnings.map((field) => t(`settings.codexUAWarn_${field}`)).join(' / ') })}</span>
+                      </div>
+                    ) : null}
+                  </div>
+                  {codexUAMode === 'pool' ? null : (
+                    <>
+                      <SettingField label={t('settings.codexUserAgentRaw')} description={t('settings.codexUserAgentRawDesc')}>
+                        <Input
+                          className="font-mono text-xs"
+                          value={codexUserAgentConfig.raw_user_agent ?? ''}
+                          placeholder="codex-tui/0.153.3 (Linux Unknown; x86_64) xterm-256color (codex-tui; 0.153.3)"
+                          onChange={(e: ChangeEvent<HTMLInputElement>) => updateCodexUserAgentConfig({ raw_user_agent: e.target.value })}
+                          onBlur={saveCodexUserAgentConfig}
+                        />
+                      </SettingField>
+                      {codexUARawActive ? (
+                        <p className="-mt-1.5 text-[11px] leading-relaxed text-amber-600 dark:text-amber-400 sm:text-xs">
+                          {t('settings.codexUARawActiveHint')}
+                        </p>
+                      ) : null}
+                      <div className={cn('divide-y divide-border/60 rounded-xl border border-border/60 transition-opacity', codexUARawActive && 'opacity-60')}>
+                        <SettingsFieldGroup title={t('settings.codexUAGroupClient')} hint="name/version">
+                          <SettingField label={t('settings.codexUAClientName')} description={t('settings.codexUAClientNameDesc')}>
                             <Input
-                              value={codexUserAgentConfig.app_name ?? ''}
-                              placeholder={codexUAAppFollowsCLI ? t('settings.codexUAFollowsClient') : codexUAEffectiveAppName}
-                              disabled={codexUAAppFollowsCLI || (codexUAKind === 'codex-desktop')}
-                              onChange={(e: ChangeEvent<HTMLInputElement>) => updateCodexUserAgentConfig({ app_name: e.target.value })}
+                              value={codexUserAgentConfig.client_name ?? ''}
+                              placeholder={codexUAKindSpec?.client_name ?? DEFAULT_CODEX_UA_CONFIG.client_name}
+                              disabled={codexUAKind !== 'custom'}
+                              onChange={(e: ChangeEvent<HTMLInputElement>) => updateCodexUserAgentConfig({ client_name: e.target.value })}
                               onBlur={saveCodexUserAgentConfig}
                             />
-                          </div>
-                        </SettingField>
-                        <SettingField label={t('settings.codexUAAppVersion')} description={t('settings.codexUAAppVersionDesc')}>
-                          <Input
-                            value={codexUserAgentConfig.app_version ?? ''}
-                            placeholder={codexUAAppFollowsCLI ? t('settings.codexUAFollowsClient') : t('settings.codexUAAutoPaired')}
-                            disabled={codexUAAppFollowsCLI}
-                            onChange={(e: ChangeEvent<HTMLInputElement>) => updateCodexUserAgentConfig({ app_version: e.target.value })}
-                            onBlur={saveCodexUserAgentConfig}
-                          />
-                        </SettingField>
-                      </>
-                    )}
-                    <div className="min-w-0 rounded-lg border border-border/70 bg-muted/25 p-3 sm:col-span-2 xl:col-span-3">
-                      <div className="mb-1.5 text-[13px] font-medium text-foreground">
-                        {codexUAMode === 'pool' ? t('settings.codexUAPoolPreview') : t('settings.codexUAPreview')}
+                          </SettingField>
+                          <SettingField label={t('settings.codexUAClientVersion')} description={t('settings.codexUAClientVersionDesc')}>
+                            <Input
+                              value={codexUserAgentConfig.client_version ?? ''}
+                              placeholder={codexUAClientVersionPlaceholder}
+                              onChange={(e: ChangeEvent<HTMLInputElement>) => updateCodexUserAgentConfig({ client_version: e.target.value })}
+                              onBlur={saveCodexUserAgentConfig}
+                            />
+                          </SettingField>
+                        </SettingsFieldGroup>
+                        <SettingsFieldGroup title={t('settings.codexUAGroupPlatform')} hint="(os version; arch)">
+                          <SettingField label={t('settings.codexUAPlatformPreset')} description={t('settings.codexUAPlatformPresetDesc')}>
+                            <Select
+                              value={codexUAPlatformPresetValue}
+                              onValueChange={applyCodexUAPlatformPreset}
+                              options={codexUAPlatformOptions}
+                            />
+                          </SettingField>
+                          <SettingField label={t('settings.codexUAOSName')} description={t('settings.codexUAOSNameDesc')}>
+                            <Input
+                              value={codexUserAgentConfig.os_name ?? ''}
+                              placeholder={codexUAKindSpec?.default_platform.os_name ?? DEFAULT_CODEX_UA_CONFIG.os_name}
+                              onChange={(e: ChangeEvent<HTMLInputElement>) => updateCodexUserAgentConfig({ os_name: e.target.value })}
+                              onBlur={saveCodexUserAgentConfig}
+                            />
+                          </SettingField>
+                          <SettingField label={t('settings.codexUAOSVersion')} description={t('settings.codexUAOSVersionDesc')}>
+                            <Input
+                              value={codexUserAgentConfig.os_version ?? ''}
+                              placeholder={codexUAKindSpec?.default_platform.os_version ?? DEFAULT_CODEX_UA_CONFIG.os_version}
+                              onChange={(e: ChangeEvent<HTMLInputElement>) => updateCodexUserAgentConfig({ os_version: e.target.value })}
+                              onBlur={saveCodexUserAgentConfig}
+                            />
+                          </SettingField>
+                          <SettingField label={t('settings.codexUAArch')} description={t('settings.codexUAArchDesc')}>
+                            <Input
+                              value={codexUserAgentConfig.arch ?? ''}
+                              placeholder={codexUAKindSpec?.default_platform.arch ?? DEFAULT_CODEX_UA_CONFIG.arch}
+                              onChange={(e: ChangeEvent<HTMLInputElement>) => updateCodexUserAgentConfig({ arch: e.target.value })}
+                              onBlur={saveCodexUserAgentConfig}
+                            />
+                          </SettingField>
+                        </SettingsFieldGroup>
+                        <SettingsFieldGroup title={t('settings.codexUAGroupTerminal')} hint="TERM_PROGRAM">
+                          <SettingField label={t('settings.codexUATerminalPreset')} description={t('settings.codexUATerminalPresetDesc')}>
+                            <Select
+                              value={codexUATerminalPresetValue}
+                              onValueChange={(value) => { if (value !== 'custom') patchAndSaveCodexUserAgentConfig({ terminal: value }) }}
+                              options={codexUATerminalOptions}
+                            />
+                          </SettingField>
+                          <SettingField label={t('settings.codexUATerminal')} description={t('settings.codexUATerminalDesc')}>
+                            <Input
+                              value={codexUserAgentConfig.terminal ?? ''}
+                              placeholder={codexUAKindSpec?.default_terminal ?? DEFAULT_CODEX_UA_CONFIG.terminal}
+                              onChange={(e: ChangeEvent<HTMLInputElement>) => updateCodexUserAgentConfig({ terminal: e.target.value })}
+                              onBlur={saveCodexUserAgentConfig}
+                            />
+                          </SettingField>
+                        </SettingsFieldGroup>
+                        <SettingsFieldGroup title={t('settings.codexUAGroupApp')} hint="(app; version)">
+                          <SettingField label={t('settings.codexUAAppName')} description={t('settings.codexUAAppNameDesc')}>
+                            <div className="space-y-2">
+                              {codexUAShowAppNamePreset ? (
+                                <Select
+                                  value={codexUAAppNamePresetValue}
+                                  onValueChange={(value) => { if (value !== 'custom') patchAndSaveCodexUserAgentConfig({ app_name: value }) }}
+                                  options={codexUAAppNameOptions}
+                                />
+                              ) : null}
+                              <Input
+                                value={codexUserAgentConfig.app_name ?? ''}
+                                placeholder={codexUAAppFollowsCLI ? t('settings.codexUAFollowsClient') : codexUAEffectiveAppName}
+                                disabled={codexUAAppFollowsCLI || (codexUAKind === 'codex-desktop')}
+                                onChange={(e: ChangeEvent<HTMLInputElement>) => updateCodexUserAgentConfig({ app_name: e.target.value })}
+                                onBlur={saveCodexUserAgentConfig}
+                              />
+                            </div>
+                          </SettingField>
+                          <SettingField label={t('settings.codexUAAppVersion')} description={t('settings.codexUAAppVersionDesc')}>
+                            <Input
+                              value={codexUserAgentConfig.app_version ?? ''}
+                              placeholder={codexUAAppVersionPlaceholder}
+                              disabled={codexUAAppFollowsCLI}
+                              onChange={(e: ChangeEvent<HTMLInputElement>) => updateCodexUserAgentConfig({ app_version: e.target.value })}
+                              onBlur={saveCodexUserAgentConfig}
+                            />
+                          </SettingField>
+                        </SettingsFieldGroup>
                       </div>
-                      {codexUAPreviewError ? (
-                        <div className="break-all text-[11px] leading-5 text-destructive">{codexUAPreviewError}</div>
-                      ) : !codexUAPreview ? (
-                        <div className="text-[11px] leading-5 text-muted-foreground">{t('settings.codexUAPreviewLoading')}</div>
-                      ) : codexUAPreview.persona ? (
-                        <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-0.5 font-mono text-[11px] leading-5 text-muted-foreground">
-                          <dt className="text-foreground/70">User-Agent</dt>
-                          <dd className="break-all">{codexUAPreview.persona.user_agent}</dd>
-                          <dt className="text-foreground/70">Originator</dt>
-                          <dd className="break-all">{codexUAPreview.persona.originator}</dd>
-                          <dt className="text-foreground/70">Version</dt>
-                          <dd className="break-all">{codexUAPreview.persona.version}</dd>
-                        </dl>
-                      ) : (
-                        <ul className="space-y-0.5 font-mono text-[11px] leading-5 text-muted-foreground">
-                          {(codexUAPreview.samples ?? []).map((sample) => (
-                            <li key={`${sample.label}-${sample.account_id ?? 0}`} className="break-all">
-                              <span className="text-foreground/70">{sample.label}{sample.account_id ? ` · ${sample.account_id}` : ''}</span>
-                              {' '}{sample.user_agent}
-                              <span className="text-foreground/50">{' · '}{sample.originator}</span>
-                            </li>
-                          ))}
-                        </ul>
-                      )}
-                      {codexUAPreview?.warnings?.length ? (
-                        <div className="mt-1.5 text-[11px] leading-5 text-amber-600 dark:text-amber-400">
-                          {t('settings.codexUAWarnUnseen', { fields: codexUAPreview.warnings.map((field) => t(`settings.codexUAWarn_${field}`)).join(' / ') })}
-                        </div>
-                      ) : null}
-                    </div>
-                  </div>
+                    </>
+                  )}
+                </div>
+                <div className="mt-4 border-t border-border/60 pt-4">
+                  <SettingField
+                    label={t('settings.codexUnifiedClientIdentity')}
+                    description={t('settings.codexUnifiedClientIdentityDesc')}
+                    layout="row"
+                  >
+                    <Switch
+                      aria-label={t('settings.codexUnifiedClientIdentity')}
+                      checked={settingsForm.codex_unified_client_identity_enabled}
+                      onCheckedChange={(checked) => autoSaveBooleanField('codex_unified_client_identity_enabled', checked)}
+                    />
+                  </SettingField>
+                  {settingsForm.codex_unified_client_identity_enabled && settingsForm.client_compat_mode !== 'force' ? (
+                    <p className="mt-2 text-[11px] leading-relaxed text-amber-600 dark:text-amber-400 sm:text-xs">
+                      {t('settings.codexUnifiedClientIdentityCompatHint')}
+                    </p>
+                  ) : null}
                 </div>
               </SettingsCard>
               </SettingsSection>
@@ -4362,131 +4951,91 @@ export default function Settings() {
               </SettingsSection>
 
               <SettingsSection id="settings-models" title={t('settings.nav.models')} description={t('settings.nav.modelsDesc')} icon={<Layers className="size-4" />}>
-                <div className="flex flex-wrap items-center justify-between gap-2.5 rounded-lg border border-border/80 bg-card/80 px-3.5 py-2.5 shadow-sm">
-                  <div className="flex min-w-0 flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                    <Badge variant="secondary" className="tabular-nums">
-                      {t('settings.modelsEnabled')}: {enabledModelCount}
-                    </Badge>
-                    <span className="hidden sm:inline text-border">·</span>
-                    <span className="truncate">
-                      {t('settings.modelsLastSynced')}: {modelsLastSyncedLabel}
-                    </span>
+                <ModelRegistryOverview
+                  items={visibleModelItems}
+                  lastSyncedLabel={modelsLastSyncedLabel}
+                  sourceUrl={modelsSourceLabel}
+                  syncing={syncingModels}
+                  onSync={() => void handleSyncModels()}
+                  onOpen={() => setModelPanel('registry')}
+                />
+                <div className="space-y-2.5">
+                  <div className="px-0.5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground/90">
+                    {t('settings.modelRulesTitle')}
                   </div>
-                  <div className="flex flex-wrap items-center gap-2">
-                    <a
-                      href={modelsSourceLabel}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="inline-flex items-center gap-1 text-xs font-semibold text-primary hover:underline"
-                    >
-                      <ExternalLink className="size-3.5" />
-                      {t('settings.nav.openSource')}
-                    </a>
-                    <Button size="sm" variant="outline" onClick={() => void handleSyncModels()} disabled={syncingModels}>
-                      <RefreshCw className={cn('size-3.5', syncingModels && 'animate-spin')} />
-                      {syncingModels ? t('settings.modelsSyncing') : t('settings.syncUpstreamModels')}
-                    </Button>
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <ModelRuleCard
+                      icon={<ChannelLogo channel="claude" size={16} />}
+                      title={t('settings2.anthropicModelMapping')}
+                      description={t('settings2.anthropicModelMappingDesc')}
+                      count={anthropicMappingEntries.length}
+                      preview={<ModelMappingPreview entries={anthropicMappingEntries} />}
+                      dirty={dirtyKeySet.has(MODEL_PANEL_FIELDS.anthropic)}
+                      onOpen={() => setModelPanel('anthropic')}
+                    />
+                    <ModelRuleCard
+                      icon={<Shuffle />}
+                      title={t('settings2.codexModelMapping')}
+                      description={t('settings2.codexModelMappingDesc')}
+                      count={codexMappingEntries.length}
+                      preview={<ModelMappingPreview entries={codexMappingEntries} />}
+                      dirty={dirtyKeySet.has(MODEL_PANEL_FIELDS.codex)}
+                      onOpen={() => setModelPanel('codex')}
+                    />
+                    <ModelRuleCard
+                      icon={<Brain />}
+                      title={t('settings2.reasoningEffortModels')}
+                      description={t('settings2.reasoningEffortModelsDesc')}
+                      count={reasoningEffortAliases.length}
+                      preview={<ModelChipPreview labels={reasoningEffortAliases.slice(0, MODEL_REGISTRY_PREVIEW_LIMIT)} />}
+                      dirty={dirtyKeySet.has(MODEL_PANEL_FIELDS.reasoning)}
+                      onOpen={() => setModelPanel('reasoning')}
+                    />
+                    <ModelRuleCard
+                      icon={<Braces />}
+                      title={t('settings2.payloadRules')}
+                      description={t('settings2.payloadRulesDesc')}
+                      count={payloadRuleCount}
+                      preview={<ModelChipPreview labels={payloadRuleGroupLabels} />}
+                      external
+                      onOpen={() => navigate('/payload-rules')}
+                    />
                   </div>
-                </div>
-                <div className="grid gap-3 sm:grid-cols-2">
-                  <ModelSummaryCard
-                    title={t('settings.modelRegistry')}
-                    description={t('settings.modelRegistryDesc')}
-                    meta={t('settings.nav.modelCount', { count: enabledModelCount })}
-                    openLabel={t('settings.nav.manage')}
-                    onOpen={() => setModelPanel('registry')}
-                  />
-                  <ModelSummaryCard
-                    title={t('settings2.anthropicModelMapping')}
-                    description={t('settings2.anthropicModelMappingDesc')}
-                    meta={t('settings.nav.mappingCount', { count: anthropicMappingCount })}
-                    openLabel={t('settings.nav.manage')}
-                    onOpen={() => setModelPanel('anthropic')}
-                  />
-                  <ModelSummaryCard
-                    title={t('settings2.codexModelMapping')}
-                    description={t('settings2.codexModelMappingDesc')}
-                    meta={t('settings.nav.mappingCount', { count: codexMappingCount })}
-                    openLabel={t('settings.nav.manage')}
-                    onOpen={() => setModelPanel('codex')}
-                  />
-                  <ModelSummaryCard
-                    title={t('settings2.reasoningEffortModels')}
-                    description={t('settings2.reasoningEffortModelsDesc')}
-                    meta={t('settings.nav.mappingCount', { count: reasoningEffortCount })}
-                    openLabel={t('settings.nav.manage')}
-                    onOpen={() => setModelPanel('reasoning')}
-                  />
-                  <ModelSummaryCard
-                    title={t('settings2.payloadRules')}
-                    description={t('settings2.payloadRulesDesc')}
-                    meta={t('settings.nav.mappingCount', { count: payloadRuleCount })}
-                    openLabel={t('settings.nav.manage')}
-                    onOpen={() => navigate('/payload-rules')}
-                  />
                 </div>
 
                 <Sheet open={modelPanel !== null} onOpenChange={(open) => { if (!open) setModelPanel(null) }}>
                   <SheetContent
                     side="right"
                     className="sm:w-[min(calc(100%-2rem),720px)] sm:max-w-[min(calc(100%-2rem),720px)]"
+                    onOpenAutoFocus={(event) => {
+                      event.preventDefault()
+                      ;(event.currentTarget as HTMLElement | null)?.focus()
+                    }}
                   >
-                    <SheetHeader>
-                      <SheetTitle>
-                        {modelPanel === 'registry'
-                          ? t('settings.modelRegistry')
-                          : modelPanel === 'anthropic'
-                            ? t('settings2.anthropicModelMapping')
-                            : modelPanel === 'codex'
-                              ? t('settings2.codexModelMapping')
-                              : t('settings2.reasoningEffortModels')}
-                      </SheetTitle>
-                      <SheetDescription>
-                        {modelPanel === 'registry'
-                          ? t('settings.modelRegistryDesc')
-                          : modelPanel === 'anthropic'
-                            ? t('settings2.anthropicModelMappingDesc')
-                            : modelPanel === 'codex'
-                              ? t('settings2.codexModelMappingDesc')
-                              : t('settings2.reasoningEffortModelsDesc')}
-                      </SheetDescription>
-                    </SheetHeader>
-                    <SheetBody className="space-y-4">
-                      {modelPanel === 'registry' ? (
-                        <div className="space-y-3">
-                          <div className="grid grid-cols-2 gap-3">
-                            <StatusTile label={t('settings.modelsEnabled')}>{enabledModelCount}</StatusTile>
-                            <StatusTile label={t('settings.modelsLastSynced')}>
-                              <span className="text-xs font-semibold">{modelsLastSyncedLabel}</span>
-                            </StatusTile>
+                    {modelPanelMeta ? (
+                      <SheetHeader>
+                        <div className="flex items-start gap-3">
+                          <div className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary ring-1 ring-inset ring-primary/20 [&_svg]:size-4">
+                            {modelPanelMeta.icon}
                           </div>
-                          <div className="flex max-h-[min(60dvh,520px)] flex-wrap content-start gap-2 overflow-auto rounded-xl border border-border bg-muted/20 p-3">
-                            {visibleModelItems.map((model) => (
-                              <div
-                                key={model.id}
-                                className="flex h-fit flex-wrap items-center gap-1.5 rounded-md border border-border bg-background px-2.5 py-1.5"
-                              >
-                                <span className="font-mono text-xs font-semibold text-foreground">{model.id}</span>
-                                <Badge
-                                  variant={model.source === 'official_codex_docs' ? 'default' : 'secondary'}
-                                  className="text-[11px]"
-                                >
-                                  {model.source === 'official_codex_docs'
-                                    ? t('settings.modelSourceOfficial')
-                                    : model.source === 'reasoning_effort'
-                                      ? t('settings.modelSourceReasoning')
-                                      : t('settings.modelSourceBuiltin')}
-                                </Badge>
-                                {model.pro_only ? (
-                                  <Badge variant="outline" className="text-[11px]">{t('settings.modelProOnly')}</Badge>
-                                ) : null}
-                                {model.category === 'image' ? (
-                                  <Badge variant="outline" className="text-[11px]">{t('settings.modelImage')}</Badge>
-                                ) : null}
-                              </div>
-                            ))}
+                          <div className="min-w-0 flex-1 space-y-1">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <SheetTitle>{modelPanelMeta.title}</SheetTitle>
+                              <Badge variant="secondary" className="tabular-nums">{modelPanelMeta.count}</Badge>
+                            </div>
+                            <SheetDescription className="text-xs leading-relaxed">{modelPanelMeta.description}</SheetDescription>
                           </div>
                         </div>
+                      </SheetHeader>
+                    ) : null}
+                    <SheetBody className="space-y-4">
+                      {modelPanel === 'registry' ? (
+                        <ModelRegistryPanel
+                          items={visibleModelItems}
+                          lastSyncedLabel={modelsLastSyncedLabel}
+                          syncing={syncingModels}
+                          onSync={() => void handleSyncModels()}
+                        />
                       ) : null}
                       {modelPanel === 'anthropic' ? (
                         <ModelMappingEditor
@@ -4519,6 +5068,49 @@ export default function Settings() {
                         />
                       ) : null}
                     </SheetBody>
+                    {modelPanelField ? (
+                      <SheetFooter className="gap-3 sm:flex-row sm:items-center sm:justify-between">
+                        <div className="flex min-w-0 items-start gap-2 text-xs">
+                          <span
+                            className={cn('mt-1 size-2 shrink-0 rounded-full', modelPanelDirty ? 'bg-amber-500' : 'bg-emerald-500')}
+                            aria-hidden="true"
+                          />
+                          <div className="min-w-0">
+                            <div className="font-medium text-foreground">
+                              {modelPanelDirty ? t('settings.modelPanelUnsaved') : t('settings.saveStatusSaved')}
+                            </div>
+                            {modelPanelOtherDirtyCount > 0 ? (
+                              <p className="mt-0.5 text-[11px] text-muted-foreground">
+                                {t('settings.modelPanelOtherDirty', { n: modelPanelOtherDirtyCount })}
+                              </p>
+                            ) : null}
+                          </div>
+                        </div>
+                        <div className="flex shrink-0 items-center gap-2 max-sm:w-full">
+                          {modelPanelDirty ? (
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="max-sm:flex-1"
+                              onClick={() => discardSettingsField(modelPanelField)}
+                              disabled={savingSettings}
+                            >
+                              <RotateCcw className="size-3.5" />
+                              {t('settings.discardChanges')}
+                            </Button>
+                          ) : null}
+                          <Button
+                            size="sm"
+                            className="max-sm:flex-1"
+                            onClick={() => void handleSaveSettings()}
+                            disabled={dirtyCount === 0 || savingSettings || autoSaveStatus === 'saving'}
+                          >
+                            <Save className="size-3.5" />
+                            {saveButtonLabel}
+                          </Button>
+                        </div>
+                      </SheetFooter>
+                    ) : null}
                   </SheetContent>
                 </Sheet>
               </SettingsSection>
@@ -4539,6 +5131,7 @@ export default function Settings() {
               <SettingsSection id="settings-antigravity" title={t('settings.nav.antigravity')} description={t('settings.nav.antigravityDesc')} icon={<ChannelLogo channel="antigravity" size={16} />}>
               <ChannelConnectivityTestCard channel="antigravity" />
               <AntigravityModelRedirectCard />
+              <AntigravityThinkingCard />
               <SettingsCard
                 title={t('settings.antigravityOAuth.title')}
                 description={t('settings.antigravityOAuth.description')}
@@ -4870,38 +5463,7 @@ export default function Settings() {
                         />
                       </SettingField>
                       <SettingField label={t('settings.timezone')} description={t('settings.timezoneDesc')}>
-                        <Select
-                          value={getTimezone()}
-                          onValueChange={(value) => {
-                            setTimezone(value)
-                            window.location.reload()
-                          }}
-                          options={[
-                            { label: t('settings.timezoneAuto'), value: Intl.DateTimeFormat().resolvedOptions().timeZone },
-                            { label: '(UTC) UTC', value: 'UTC' },
-                            { label: '(GMT+08:00) Asia/Shanghai', value: 'Asia/Shanghai' },
-                            { label: '(GMT+09:00) Asia/Tokyo', value: 'Asia/Tokyo' },
-                            { label: '(GMT+09:00) Asia/Seoul', value: 'Asia/Seoul' },
-                            { label: '(GMT+08:00) Asia/Singapore', value: 'Asia/Singapore' },
-                            { label: '(GMT+08:00) Asia/Hong_Kong', value: 'Asia/Hong_Kong' },
-                            { label: '(GMT+08:00) Asia/Taipei', value: 'Asia/Taipei' },
-                            { label: '(GMT+07:00) Asia/Bangkok', value: 'Asia/Bangkok' },
-                            { label: '(GMT+04:00) Asia/Dubai', value: 'Asia/Dubai' },
-                            { label: '(GMT+05:30) Asia/Kolkata', value: 'Asia/Kolkata' },
-                            { label: '(GMT+01:00) Europe/London', value: 'Europe/London' },
-                            { label: '(GMT+02:00) Europe/Paris', value: 'Europe/Paris' },
-                            { label: '(GMT+02:00) Europe/Berlin', value: 'Europe/Berlin' },
-                            { label: '(GMT+03:00) Europe/Moscow', value: 'Europe/Moscow' },
-                            { label: '(GMT+02:00) Europe/Amsterdam', value: 'Europe/Amsterdam' },
-                            { label: '(GMT+02:00) Europe/Rome', value: 'Europe/Rome' },
-                            { label: '(GMT-04:00) America/New_York', value: 'America/New_York' },
-                            { label: '(GMT-07:00) America/Los_Angeles', value: 'America/Los_Angeles' },
-                            { label: '(GMT-05:00) America/Chicago', value: 'America/Chicago' },
-                            { label: '(GMT-03:00) America/Sao_Paulo', value: 'America/Sao_Paulo' },
-                            { label: '(GMT+10:00) Australia/Sydney', value: 'Australia/Sydney' },
-                            { label: '(GMT+12:00) Pacific/Auckland', value: 'Pacific/Auckland' },
-                          ]}
-                        />
+                        <DisplayTimezoneSelect />
                       </SettingField>
                     </div>
                     <SettingField label={t('settings.siteLogo')} description={t('settings.siteLogoDesc')}>
@@ -4940,6 +5502,12 @@ export default function Settings() {
                         <Switch
                           checked={settingsForm.show_full_usage_numbers}
                           onCheckedChange={(checked) => autoSaveBooleanField('show_full_usage_numbers', checked)}
+                        />
+                      </SettingField>
+                      <SettingField label={t('settings.showUpstreamModelMismatch')} description={t('settings.showUpstreamModelMismatchDesc')} layout="switch">
+                        <Switch
+                          checked={settingsForm.show_upstream_model_mismatch}
+                          onCheckedChange={(checked) => autoSaveBooleanField('show_upstream_model_mismatch', checked)}
                         />
                       </SettingField>
                     </div>

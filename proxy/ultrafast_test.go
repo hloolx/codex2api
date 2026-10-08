@@ -3,6 +3,7 @@ package proxy
 import (
 	"context"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -31,6 +32,8 @@ func TestUltrafastRequestAndUsageTiers(t *testing.T) {
 		{"default", "ultrafast", "default"},
 		{"ultrafast", "default", "default"},
 		{"", "ultrafast", "ultrafast"},
+		{"priority", "ultrafast", "priority"},
+		{"ultrafast", "priority", "priority"},
 	} {
 		got := resolveUsageServiceTiers(tc.actual, tc.requested)
 		if got.RequestedServiceTier != tc.requested || got.ActualServiceTier != tc.actual || got.BillingServiceTier != tc.billing {
@@ -40,6 +43,10 @@ func TestUltrafastRequestAndUsageTiers(t *testing.T) {
 	fast := database.CalculateCost(1000, 500, 200, "gpt-5.6-sol", "priority")
 	if got := database.CalculateCost(1000, 500, 200, "gpt-5.6-sol", "ultrafast"); got != fast || got <= 0 {
 		t.Fatalf("Ultrafast billing = %v, want Fast policy %v", got, fast)
+	}
+	standard := database.CalculateCost(1000, 500, 200, "gpt-6-astra", "")
+	if got := database.CalculateCost(1000, 500, 200, "gpt-6-astra", "ultrafast"); math.Abs(got-standard*6) > 1e-12 {
+		t.Fatalf("Astra Ultrafast billing = %v, want 6x standard %v", got, standard*6)
 	}
 }
 

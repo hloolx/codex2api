@@ -173,7 +173,7 @@ func applyReasoningEffortModelToBody(rawBody []byte, entry ReasoningEffortModel)
 	return updatedBody, nil
 }
 
-func (h *Handler) applyConfiguredModelMappingToBody(rawBody []byte, supportedModels []string) ([]byte, string, string, bool) {
+func (h *Handler) applyBaseModelMappingToBody(rawBody []byte, supportedModels []string) ([]byte, string, string, bool) {
 	originalModel := strings.TrimSpace(gjson.GetBytes(rawBody, "model").String())
 	effectiveModel := originalModel
 	if originalModel == "" || !gjson.ValidBytes(rawBody) || h == nil || h.store == nil {
@@ -208,11 +208,11 @@ func (h *Handler) applyConfiguredModelMappingToBody(rawBody []byte, supportedMod
 }
 
 // accountModelMappingTargetModels returns the concrete upstream models that an
-// account-level mapping may target. Grok accounts use their visible catalog
-// (or conservative defaults before the first catalog sync), narrowed by an
-// explicit Models whitelist. This keeps aliases from reviving hidden or
-// catalog-absent models while allowing undeclared Grok accounts to expose GPT
-// compatibility aliases.
+// account-level mapping may target. Grok accounts with a model list can only
+// target names on that list. An empty list uses the visible catalog, or
+// conservative defaults before the first catalog sync. This keeps aliases from
+// reviving hidden or catalog-absent models while allowing undeclared Grok
+// accounts to expose GPT compatibility aliases.
 func accountModelMappingTargetModels(account *auth.Account) []string {
 	if account == nil {
 		return nil

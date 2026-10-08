@@ -38,8 +38,9 @@ const (
 	ErrorCodeUpstreamStreamBreak = "upstream_stream_break"
 
 	// Server errors
-	ErrorCodeNoAvailableAccount = "no_available_account"
-	ErrorCodeInternalError      = "internal_error"
+	ErrorCodeNoAvailableAccount              = "no_available_account"
+	ErrorCodeAccountPoolConcurrencySaturated = "account_pool_concurrency_saturated"
+	ErrorCodeInternalError                   = "internal_error"
 
 	// Request errors
 	ErrorCodeBadRequest   = "bad_request"

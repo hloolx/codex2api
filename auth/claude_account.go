@@ -14,7 +14,6 @@ import (
 	"encoding/hex"
 	"fmt"
 	"strings"
-	"sync/atomic"
 	"time"
 )
 
@@ -203,7 +202,7 @@ func (s *Store) refreshClaudeAccount(ctx context.Context, acc *Account, forceRef
 	if acc.Status != StatusError {
 		acc.HealthTier = HealthTierHealthy
 	}
-	acc.recomputeSchedulerLocked(atomic.LoadInt64(&s.maxConcurrency))
+	acc.recomputeSchedulerLocked(s.maxConcurrency.Load())
 	acc.mu.Unlock()
 
 	s.fastSchedulerUpdate(acc)

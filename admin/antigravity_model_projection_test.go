@@ -17,12 +17,12 @@ import (
 )
 
 func TestAntigravityModelsForPersistenceExpandsLogicalModelsButKeepsAliasesFixed(t *testing.T) {
-	logical := antigravityModelsForPersistence([]string{"gemini-3.5-flash", "gemini-3.1-pro"})
+	logical := antigravityModelsForPersistence([]string{"gemini-3.6-flash", "gemini-3.1-pro"})
 	wantLogical := []string{
-		"gemini-3-flash-agent",
 		"gemini-3.1-pro-low",
-		"gemini-3.5-flash-extra-low",
-		"gemini-3.5-flash-low",
+		"gemini-3.6-flash-high",
+		"gemini-3.6-flash-low",
+		"gemini-3.6-flash-medium",
 		"gemini-pro-agent",
 	}
 	if !reflect.DeepEqual(logical, wantLogical) {
@@ -30,15 +30,14 @@ func TestAntigravityModelsForPersistenceExpandsLogicalModelsButKeepsAliasesFixed
 	}
 
 	aliases := antigravityModelsForPersistence([]string{
-		"gemini-3.5-flash-low",
 		"gemini-3.6-flash-high",
 		"gemini-3.1-pro-high",
 	})
-	wantAliases := []string{"gemini-3.5-flash-extra-low", "gemini-3.6-flash-high", "gemini-pro-agent"}
+	wantAliases := []string{"gemini-3.6-flash-high", "gemini-pro-agent"}
 	if !reflect.DeepEqual(aliases, wantAliases) {
 		t.Fatalf("alias persisted models = %v, want %v", aliases, wantAliases)
 	}
-	wantPublished := []string{"gemini-3.5-flash-low", "gemini-3.6-flash-high", "gemini-3.1-pro-high"}
+	wantPublished := []string{"gemini-3.6-flash-high", "gemini-3.1-pro-high"}
 	if published := antigravityPublishedModels(aliases); !reflect.DeepEqual(published, wantPublished) {
 		t.Fatalf("fixed-tier backings published = %v, want %v", published, wantPublished)
 	}
@@ -46,6 +45,8 @@ func TestAntigravityModelsForPersistenceExpandsLogicalModelsButKeepsAliasesFixed
 
 func TestAntigravityAccountResponseProjectsRawModelsAndQuota(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)
+	// The upstream catalog still lists retired Gemini 3.5 Flash backings; they
+	// must stay in durable raw facts but never surface in the response.
 	rawModels := []string{
 		"gemini-3.5-flash-extra-low",
 		"gemini-3.5-flash-low",
@@ -87,7 +88,6 @@ func TestAntigravityAccountResponseProjectsRawModelsAndQuota(t *testing.T) {
 	t.Cleanup(store.Stop)
 	response := (&Handler{store: store}).buildAccountResponse(row, nil, nil, nil, nil, true)
 	wantModels := []string{
-		"gemini-3.5-flash-low", "gemini-3.5-flash-medium", "gemini-3.5-flash-high",
 		"gemini-3.6-flash-low", "gemini-3.6-flash-medium", "gemini-3.6-flash-high",
 		"gemini-3.7-flash-low", "gemini-3.7-flash-medium", "gemini-3.7-flash-high",
 		"gemini-3.1-pro-low", "gemini-3.1-pro-high",
@@ -126,6 +126,32 @@ func TestAntigravityAccountResponseProjectsRawModelsAndQuota(t *testing.T) {
 	}
 }
 
+func TestAntigravityPublishedQuotaKeepsDiscoveredModels(t *testing.T) {
+	maxOutput := 128000
+	raw := auth.AntigravityQuotaSnapshot{Models: []auth.AntigravityModelQuota{
+		{ModelID: "gemini-3.1-pro-low", RemainingPercent: 90},
+		{ModelID: "claude-opus-5-5-high", DisplayName: "Claude Opus 5.5 (High)", RemainingPercent: 80, MaxOutputTokens: &maxOutput},
+		{ModelID: "gemini-3-flash", RemainingPercent: 70},
+	}}
+	projected := antigravityPublishedQuota(raw)
+	got := make(map[string]auth.AntigravityModelQuota, len(projected.Models))
+	for _, model := range projected.Models {
+		got[model.ModelID] = model
+	}
+	if len(got) != 3 {
+		t.Fatalf("projected quota models = %+v", projected.Models)
+	}
+	if claude := got["claude-opus-5-5-high"]; claude.RemainingPercent != 80 || claude.MaxOutputTokens == nil || *claude.MaxOutputTokens != 128000 {
+		t.Fatalf("discovered claude quota = %+v", claude)
+	}
+	if flash := got["gemini-3-flash"]; flash.RemainingPercent != 70 {
+		t.Fatalf("discovered gemini quota = %+v", flash)
+	}
+	if low := got["gemini-3.1-pro-low"]; low.RemainingPercent != 90 {
+		t.Fatalf("fixed-tier quota = %+v", low)
+	}
+}
+
 func TestAntigravityAPIKeyAdminModelWritesPersistWireIDs(t *testing.T) {
 	handler, db, _, _ := newImportGroupsTestHandler(t)
 	handler.store = nil
@@ -137,7 +163,7 @@ func TestAntigravityAPIKeyAdminModelWritesPersistWireIDs(t *testing.T) {
 		"name":"public models",
 		"auth_kind":"api_key",
 		"api_key":"public-model-key",
-		"models":["gemini-3.5-flash","gemini-3.7-flash"]
+		"models":["gemini-3.1-pro","gemini-3.7-flash"]
 	}`))
 	createContext.Request.Header.Set("Content-Type", "application/json")
 	handler.AddAntigravityAccount(createContext)
@@ -154,7 +180,7 @@ func TestAntigravityAPIKeyAdminModelWritesPersistWireIDs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantCreated := []string{"gemini-3-flash-agent", "gemini-3.5-flash-extra-low", "gemini-3.5-flash-low", "gemini-3.7-flash-tiered"}
+	wantCreated := []string{"gemini-3.1-pro-low", "gemini-3.7-flash-tiered", "gemini-pro-agent"}
 	if got := row.GetCredentialStringSlice("models"); !reflect.DeepEqual(got, wantCreated) {
 		t.Fatalf("created persisted models = %v, want %v", got, wantCreated)
 	}
@@ -214,19 +240,19 @@ func TestFetchAntigravityModelsProjectsWireCatalog(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
 	c.Request = httptest.NewRequest(http.MethodPost, "/api/admin/accounts/antigravity/models", strings.NewReader(`{
-		"models":["gemini-3.5-flash","gemini-3.7-flash","gemini-3.1-pro","claude-sonnet-4-6"]
+		"models":["gemini-3.6-flash","gemini-3.7-flash","gemini-3.1-pro","claude-sonnet-4-6"]
 	}`))
 	c.Request.Header.Set("Content-Type", "application/json")
 	(&Handler{}).FetchAntigravityModels(c)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("fetch response = %d %s", recorder.Code, recorder.Body.String())
 	}
-	for _, raw := range []string{"gemini-3.5-flash-extra-low", "gemini-3-flash-agent", "gemini-3.7-flash-tiered", "gemini-pro-agent"} {
+	for _, raw := range []string{"gemini-3.7-flash-tiered", "gemini-pro-agent"} {
 		if strings.Contains(recorder.Body.String(), raw) {
 			t.Fatalf("model selection leaked raw model %q: %s", raw, recorder.Body.String())
 		}
 	}
-	for _, publicID := range []string{"gemini-3.5-flash-low", "gemini-3.5-flash-medium", "gemini-3.5-flash-high", "gemini-3.7-flash-low", "gemini-3.7-flash-medium", "gemini-3.7-flash-high", "gemini-3.1-pro-low", "gemini-3.1-pro-high", "claude-sonnet-4-6"} {
+	for _, publicID := range []string{"gemini-3.6-flash-low", "gemini-3.6-flash-medium", "gemini-3.6-flash-high", "gemini-3.7-flash-low", "gemini-3.7-flash-medium", "gemini-3.7-flash-high", "gemini-3.1-pro-low", "gemini-3.1-pro-high", "claude-sonnet-4-6"} {
 		if !strings.Contains(recorder.Body.String(), publicID) {
 			t.Fatalf("model selection missing %q: %s", publicID, recorder.Body.String())
 		}

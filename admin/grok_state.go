@@ -545,6 +545,10 @@ func visiblePersistedModelIDs(items []database.GrokModelCatalogItem, authKind st
 // grokAccessTokenStale reports whether a control-plane sync should refresh an
 // OAuth access token before issuing its read-only requests.
 func grokAccessTokenStale(account *auth.Account) bool {
+	return grokAccessTokenExpiresWithin(account, 2*time.Minute)
+}
+
+func grokAccessTokenExpiresWithin(account *auth.Account, window time.Duration) bool {
 	if account == nil {
 		return true
 	}
@@ -553,7 +557,7 @@ func grokAccessTokenStale(account *auth.Account) bool {
 	if strings.TrimSpace(account.AccessToken) == "" {
 		return true
 	}
-	return !account.ExpiresAt.IsZero() && time.Now().Add(2*time.Minute).After(account.ExpiresAt)
+	return !account.ExpiresAt.IsZero() && time.Now().Add(window).After(account.ExpiresAt)
 }
 
 func (h *Handler) syncGrokAccountState(ctx context.Context, id int64) (*grokStateSyncResult, error) {
@@ -610,7 +614,7 @@ func (h *Handler) syncGrokAccountStateSelected(ctx context.Context, id int64, se
 				payload, presence = previous.Payload, previous.FieldPresence
 			}
 			if fetchErr != nil {
-				result.Errors[string(kind)] = safeGrokUpstreamError(fetchErr)
+				result.Errors[string(kind)] = fmt.Sprintf("%s (status=%d elapsed_ms=%d)", safeGrokUpstreamError(fetchErr), factResult.StatusCode, time.Since(factResult.ObservedAt).Milliseconds())
 			} else {
 				observed, httpStatus = factResult.ObservedAt, factResult.StatusCode
 				status = grokControlPlaneFailureStatus(factResult.StatusCode, factResult.Body)
@@ -621,7 +625,7 @@ func (h *Handler) syncGrokAccountStateSelected(ctx context.Context, id int64, se
 						result.Errors[string(kind)] = "upstream response could not be safely parsed"
 					}
 				} else if status != "ok" {
-					result.Errors[string(kind)] = fmt.Sprintf("upstream status %d", httpStatus)
+					result.Errors[string(kind)] = fmt.Sprintf("upstream status=%d elapsed_ms=%d", httpStatus, time.Since(factResult.ObservedAt).Milliseconds())
 				}
 			}
 			if payload == nil {
@@ -678,7 +682,7 @@ func (h *Handler) syncGrokAccountStateSelected(ctx context.Context, id int64, se
 		}
 		catalog, catalogErr := proxy.FetchGrokModelCatalog(ctx, account, proxyURL, ifNoneMatch)
 		if catalogErr != nil {
-			result.Errors["models"] = safeGrokUpstreamError(catalogErr)
+			result.Errors["models"] = fmt.Sprintf("%s (status=%d elapsed_ms=%d)", safeGrokUpstreamError(catalogErr), catalog.StatusCode, time.Since(catalog.ObservedAt).Milliseconds())
 			status := "unavailable"
 			var upstream *proxy.GrokHTTPError
 			if proxy.AsGrokHTTPError(catalogErr, &upstream) {
@@ -702,15 +706,25 @@ func (h *Handler) syncGrokAccountStateSelected(ctx context.Context, id int64, se
 			}
 			result.Models = visiblePersistedModelIDs(oldItems, account.GrokAuthKind())
 		} else if catalog.NotModified {
-			applied, touchErr := h.db.TouchGrokModelCatalogNotModified(ctx, id, origin, generation, catalog.ObservedAt, catalog.ObservedAt.Add(grokFactFreshness))
+			if oldSnapshot == nil {
+				return nil, fmt.Errorf("models: 304 without a stored catalog")
+			}
+			unchanged := *oldSnapshot
+			unchanged.RequestETagHint = oldSnapshot.ETagHint
+			unchanged.Status = "ok"
+			unchanged.ObservedAt, unchanged.ExpiresAt = catalog.ObservedAt, catalog.ObservedAt.Add(grokFactFreshness)
+			if catalog.HTTPETag != "" {
+				unchanged.HTTPETag = catalog.HTTPETag
+			}
+			if catalog.ModelsETagHint != "" {
+				unchanged.ETagHint, unchanged.ETagHintObservedAt = catalog.ModelsETagHint, catalog.ObservedAt
+			}
+			applied, touchErr := h.db.ReplaceGrokModelCatalog(ctx, unchanged, oldItems)
 			if touchErr != nil {
 				return nil, touchErr
 			}
 			if !applied {
 				return nil, errGrokCredentialChanged
-			}
-			if catalog.ModelsETagHint != "" {
-				_, _ = h.db.UpdateGrokModelsETagHint(ctx, id, origin, generation, catalog.ModelsETagHint, catalog.ObservedAt)
 			}
 			result.Models = visiblePersistedModelIDs(oldItems, account.GrokAuthKind())
 		} else {
@@ -719,6 +733,9 @@ func (h *Handler) syncGrokAccountStateSelected(ctx context.Context, id int64, se
 				AccountID: id, Origin: origin, CredentialGeneration: generation, AuthKind: account.GrokAuthKind(),
 				Status: "ok", HTTPETag: catalog.HTTPETag, ETagHint: catalog.ModelsETagHint,
 				ObservedAt: catalog.ObservedAt, ExpiresAt: catalog.ObservedAt.Add(grokFactFreshness),
+			}
+			if oldSnapshot != nil {
+				snapshot.RequestETagHint = oldSnapshot.ETagHint
 			}
 			if catalog.ModelsETagHint != "" {
 				snapshot.ETagHintObservedAt = catalog.ObservedAt
@@ -1251,7 +1268,7 @@ func (h *Handler) triggerGrokCapabilityProbeForGeneration(accountID, generation 
 		if err != nil || current != generation {
 			return
 		}
-		if _, err = h.runGrokCapabilityProbe(parent, accountID, false); err != nil && !errors.Is(err, context.Canceled) {
+		if err = h.db.EnqueueGrokCapabilityMaintenance(parent, accountID, time.Now()); err != nil && !errors.Is(err, context.Canceled) {
 			log.Printf("[账号 %d] generation %d Grok 协议能力重建失败: %v", accountID, generation, err)
 		}
 	})

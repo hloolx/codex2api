@@ -15,6 +15,7 @@ test("account list sort keys map to the paged API", () => {
   assert.equal(toAccountListApiSort("importTime"), "created_at");
   assert.equal(toAccountListApiSort("schedulerPriority"), "scheduler_priority");
   assert.equal(toAccountListApiSort("updated"), "updated_at");
+  assert.equal(toAccountListApiSort("id"), "id");
 });
 
 test("large pools disable usage-log sorts from the API or pool size", () => {

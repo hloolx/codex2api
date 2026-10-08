@@ -27,7 +27,7 @@ func TestTransientRateLimitDelayedPublicationCannotReplaceQuota(t *testing.T) {
 	c := &delayedTransientCooldownCache{TokenCache: cache.NewMemory(1), entered: make(chan struct{}), resume: make(chan struct{})}
 	defer c.Close()
 	acc := newFastSchedulerTestAccount(1, HealthTierHealthy, 100, 4)
-	s := &Store{accounts: []*Account{acc}, maxConcurrency: 4, tokenCache: c}
+	s := (&Store{accounts: []*Account{acc}, tokenCache: c}).withMaxConcurrency(4)
 	done := make(chan struct{})
 	go func() { s.MarkTransientRateLimited(acc, 0); close(done) }()
 	<-c.entered
@@ -48,7 +48,7 @@ func TestTransientRateLimitExpiryRestoresIndexWithoutProbe(t *testing.T) {
 	defer cancel()
 	acc := newFastSchedulerTestAccount(1, HealthTierHealthy, 100, 4)
 	other := newFastSchedulerTestAccount(2, HealthTierHealthy, 100, 4)
-	s := &Store{accounts: []*Account{acc, other}, maxConcurrency: 4, backgroundCtx: ctx}
+	s := (&Store{accounts: []*Account{acc, other}, backgroundCtx: ctx}).withMaxConcurrency(4)
 	s.rebuildAccountIndex()
 	s.SetSchedulerEngine("indexed")
 	s.MarkTransientRateLimited(acc, 0)
@@ -91,7 +91,7 @@ func TestTransientRateLimitExpiryRestoresIndexWithoutProbe(t *testing.T) {
 
 func TestTransientRateLimitConcurrentWindowOnlyEscalatesOnce(t *testing.T) {
 	for trial := 0; trial < 100; trial++ {
-		s := &Store{maxConcurrency: 4}
+		s := (&Store{}).withMaxConcurrency(4)
 		acc := newFastSchedulerTestAccount(1, HealthTierHealthy, 100, 4)
 		start := make(chan struct{})
 		var wg sync.WaitGroup
@@ -108,7 +108,7 @@ func TestTransientRateLimitConcurrentWindowOnlyEscalatesOnce(t *testing.T) {
 }
 
 func TestTransientRateLimitCappedHintStillAdvancesBackoff(t *testing.T) {
-	s := &Store{maxConcurrency: 4}
+	s := (&Store{}).withMaxConcurrency(4)
 	acc := newFastSchedulerTestAccount(1, HealthTierHealthy, 100, 4)
 	s.MarkTransientRateLimited(acc, TransientRateLimitBackoffMax)
 	if got := acc.TransientRateLimitBackoff(); got != 1 {
@@ -127,7 +127,7 @@ func TestTransientRateLimitSummaryRespectsSparkWindow(t *testing.T) {
 	acc.PlanType = "pro"
 	acc.UsagePercent5hValid, acc.UsagePercent5h = true, 100
 	acc.Reset5hAt = time.Now().Add(time.Hour)
-	s := &Store{accounts: []*Account{acc}, maxConcurrency: 4}
+	s := (&Store{accounts: []*Account{acc}}).withMaxConcurrency(4)
 	s.MarkTransientRateLimited(acc, 0)
 	if got := s.UsageLimitedCandidateSummary(0, nil, nil, DispatchPolicySpark); !got.TransientOnly {
 		t.Fatalf("main quota incorrectly classified Spark throttle: %+v", got)
@@ -148,7 +148,7 @@ func TestTransientRateLimitSummaryRespectsSparkWindow(t *testing.T) {
 }
 
 func TestTransientRateLimitExtendsWindowForLaterRetryAfter(t *testing.T) {
-	s := &Store{maxConcurrency: 4}
+	s := (&Store{}).withMaxConcurrency(4)
 	acc := newFastSchedulerTestAccount(1, HealthTierHealthy, 100, 4)
 	s.MarkTransientRateLimited(acc, 0)
 	if got := s.MarkTransientRateLimited(acc, 2*time.Minute); got < 119*time.Second {
@@ -164,8 +164,8 @@ func TestTransientRateLimitCachePreservesClassification(t *testing.T) {
 	defer tokenCache.Close()
 	a := newFastSchedulerTestAccount(1, HealthTierHealthy, 100, 4)
 	b := newFastSchedulerTestAccount(1, HealthTierHealthy, 100, 4)
-	s1 := &Store{accounts: []*Account{a}, maxConcurrency: 4, tokenCache: tokenCache}
-	s2 := &Store{accounts: []*Account{b}, maxConcurrency: 4, tokenCache: tokenCache}
+	s1 := (&Store{accounts: []*Account{a}, tokenCache: tokenCache}).withMaxConcurrency(4)
+	s2 := (&Store{accounts: []*Account{b}, tokenCache: tokenCache}).withMaxConcurrency(4)
 	s1.MarkTransientRateLimited(a, 0)
 	if !s2.accountHasCachedCooldown(b) {
 		t.Fatal("shared cooldown missing")
@@ -182,7 +182,7 @@ func TestTransientRateLimitCachePreservesClassification(t *testing.T) {
 }
 
 func TestTransientRateLimitDoesNotArmUsageProbe(t *testing.T) {
-	s := &Store{maxConcurrency: 4, boundaryProbeWakeCh: make(chan struct{}, 1)}
+	s := (&Store{boundaryProbeWakeCh: make(chan struct{}, 1)}).withMaxConcurrency(4)
 	acc := newFastSchedulerTestAccount(1, HealthTierHealthy, 100, 4)
 	s.MarkTransientRateLimited(acc, 0)
 	if _, ok := acc.nextProbeBoundary(time.Now()); ok || len(s.boundaryProbeWakeCh) != 0 {

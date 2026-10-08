@@ -91,9 +91,9 @@ type PayloadRule struct {
 	AccountGroupNames []string       `json:"account_group_names,omitempty"`
 	AccountPlans      []string       `json:"account_plans,omitempty"`
 	Match             map[string]any `json:"match,omitempty"`
-	NotMatch    map[string]any `json:"not_match,omitempty"`
-	Exist       []string       `json:"exist,omitempty"`
-	NotExist    []string       `json:"not_exist,omitempty"`
+	NotMatch          map[string]any `json:"not_match,omitempty"`
+	Exist             []string       `json:"exist,omitempty"`
+	NotExist          []string       `json:"not_exist,omitempty"`
 	// Params 动作参数：default/override/append 为 路径→值 map，
 	// default_raw/override_raw 值须为合法 JSON 字符串，filter 为路径数组。
 	Params json.RawMessage `json:"params"`

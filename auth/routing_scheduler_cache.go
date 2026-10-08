@@ -98,7 +98,7 @@ func (s *Store) routingFastScheduler(apiKeyID int64) *FastScheduler {
 		return global
 	}
 
-	scheduler := NewFastScheduler(atomic.LoadInt64(&s.maxConcurrency), s.GetSchedulerMode())
+	scheduler := NewFastScheduler(s.maxConcurrency.Load(), s.GetSchedulerMode())
 	// A routing scheduler contains every eligible account, including accounts
 	// currently cooling down. Keeping dormant entries lets them become usable
 	// again from their live Account state without rebuilding or fan-out updates.

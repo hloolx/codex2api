@@ -39,13 +39,16 @@ func TestAstraPricingStaysFlatAcrossSettingsLoadAndMutation(t *testing.T) {
 		Source: ModelPricingSourceCustom, Input: 10, CachedInput: 1, Output: 50,
 		InputPriority: 20, CachedInputPriority: 2, OutputPriority: 100,
 	}
+	want.InputLong, want.CachedInputLong, want.OutputLong = 20, 2, 75
+	want.InputLongPriority, want.CachedInputLongPriority, want.OutputLongPriority = 40, 4, 150
+	want.LongContextThresholdTokens = 272000
 	if loaded["gpt-6-astra"] != want {
-		t.Fatalf("loaded Astra pricing retained legacy tiers: %+v", loaded["gpt-6-astra"])
+		t.Fatalf("loaded Astra pricing lost long tiers: %+v", loaded["gpt-6-astra"])
 	}
 	SetModelPricingOverrides(loaded)
-	assertFloatEqual(t, CalculateCost(300000, 1000, 100000, "gpt-6-astra", "fast"), 4.3)
+	assertFloatEqual(t, CalculateCost(300000, 1000, 100000, "gpt-6-astra", "fast"), 8.55)
 
-	// 所有手工/官方/JSON 同步共用此写入路径；旧 API 长档不能再次落入生效配置。
+	// 所有手工/官方/JSON 同步共用此写入路径，Astra 长档应保持可生效。
 	var incoming map[string]ModelPricingOverride
 	if err := json.Unmarshal([]byte(legacy), &incoming); err != nil {
 		t.Fatalf("decode incoming pricing: %v", err)
@@ -74,7 +77,7 @@ func TestAstraPricingStaysFlatAcrossSettingsLoadAndMutation(t *testing.T) {
 	}
 	SetModelPricingOverrides(nil)
 	SetModelPricingOverrides(stored)
-	assertFloatEqual(t, CalculateCost(300000, 1000, 100000, "gpt-6-astra", "fast"), 4.3)
+	assertFloatEqual(t, CalculateCost(300000, 1000, 100000, "gpt-6-astra", "fast"), 8.55)
 }
 
 func TestMutateModelPricingSettingsSerializesReadMergeWrite(t *testing.T) {

@@ -180,3 +180,41 @@ func TestApplyGrokCooldownFreeQuotaExhausted_PaidPlan(t *testing.T) {
 		t.Fatalf("runtime status = %q, want active (only the model is cooled)", got)
 	}
 }
+
+// issue #713: xAI AT 不再带 tier claim,导入包也常无 plan_type,PlanType 为空。
+// 免费额度耗尽错误本身就是在耗免费额度的证据,须整号冷却而不是按付费号只冷却模型。
+func TestApplyGrokCooldownFreeQuotaExhausted_UnknownPlanOAuth(t *testing.T) {
+	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 2})
+	acc := &auth.Account{DBID: 1, AccessToken: "at", UpstreamType: auth.UpstreamGrok}
+	store.AddAccount(acc)
+	body := []byte(`{"code":"subscription:free-usage-exhausted","error":"You've used all the included free usage for model grok-4.7 for now. tokens (actual/limit): 651613/500000."}`)
+
+	decision := applyGrokCooldown(store, acc, http.StatusTooManyRequests, body, nil, "grok-4.7")
+	if decision.Reason != "usage_limited" || decision.Scope == rateLimitScopeModel {
+		t.Fatalf("decision = %+v, want account-level usage_limited", decision)
+	}
+	if got := acc.RuntimeStatus(); got != "usage_limited" {
+		t.Fatalf("runtime status = %q, want usage_limited", got)
+	}
+}
+
+// 套餐只能从控制面 display 事实得知时:Free → 整号冷却,付费 → 模型级冷却。
+func TestApplyGrokCooldownFreeQuotaExhausted_PlanFromDisplayFact(t *testing.T) {
+	body := []byte(`{"code":"subscription:free-usage-exhausted","error":"tokens (actual/limit): 55/50."}`)
+	for _, tc := range []struct {
+		display   string
+		wantModel bool
+	}{
+		{display: "Free", wantModel: false},
+		{display: "SuperGrok", wantModel: true},
+	} {
+		store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 2})
+		acc := &auth.Account{DBID: 1, AccessToken: "at", UpstreamType: auth.UpstreamGrok,
+			CredentialGeneration: 1, GrokFactsGeneration: 1, GrokDisplayPlan: tc.display}
+		store.AddAccount(acc)
+		decision := applyGrokCooldown(store, acc, http.StatusTooManyRequests, body, nil, "grok-4.7")
+		if gotModel := decision.Scope == rateLimitScopeModel; gotModel != tc.wantModel {
+			t.Fatalf("display %q: decision = %+v, want model scope %v", tc.display, decision, tc.wantModel)
+		}
+	}
+}

@@ -7,7 +7,6 @@ import (
 	"log"
 	"net/http"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -445,7 +444,7 @@ func TestNextBoundedRetryAccountReleasesSelectedAccountForCanceledContext(t *tes
 	if got != nil {
 		t.Fatalf("nextBoundedRetryAccount returned account %d for canceled context", got.ID())
 	}
-	if active := atomic.LoadInt64(&account.ActiveRequests); active != 0 {
+	if active := account.ActiveRequests.Load(); active != 0 {
 		t.Fatalf("ActiveRequests after canceled selection = %d, want 0", active)
 	}
 }

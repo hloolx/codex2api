@@ -170,7 +170,7 @@ func TestKnownApplicationPromptsUseSessionContextOnlyInShadowMode(t *testing.T) 
 	}
 
 	monitor.Advanced.Guard.Layers.SessionContext.Mode = GuardModeShadow
-	classified, kind := classifyKnownApplicationPrompt(envelope, GuardModeShadow)
+	classified, kind := classifyKnownApplicationPrompt(envelope, GuardModeShadow, defaultApprovalReviewModels)
 	if kind != "ambient_safety" || classified.Segments[0].Origin != OriginSessionContext {
 		t.Fatalf("known application prompt was not reclassified as session context: kind=%q envelope=%+v", kind, classified)
 	}
@@ -455,7 +455,7 @@ func TestMalformedApplicationPromptAnchorsRemainCurrentUser(t *testing.T) {
 				Segments: []Segment{{Origin: OriginCurrentUser, Role: "user", Text: template, Trust: SegmentTrustClientSupplied}},
 			}
 			for _, mode := range []string{GuardModeShadow, GuardModeEnforce} {
-				classified, kind := classifyKnownApplicationPrompt(envelope, mode)
+				classified, kind := classifyKnownApplicationPrompt(envelope, mode, defaultApprovalReviewModels)
 				if classified.Segments[0].Origin != OriginCurrentUser || kind != "" {
 					t.Fatalf("malformed template was classified in %s: kind=%q segment=%+v", mode, kind, classified.Segments[0])
 				}
@@ -479,7 +479,7 @@ func TestApplicationPromptReclassificationRequiresResponsesAndSingleCurrentUser(
 		{Protocol: ProtocolResponses, Segments: []Segment{{Origin: OriginHistory, Text: "continue", Linked: true}, {Origin: OriginCurrentUser, Text: text}}},
 	}
 	for _, envelope := range tests {
-		got, kind := classifyKnownApplicationPrompt(envelope, GuardModeShadow)
+		got, kind := classifyKnownApplicationPrompt(envelope, GuardModeShadow, defaultApprovalReviewModels)
 		if kind != "" {
 			t.Fatalf("ambiguous application prompt received a kind: %q", kind)
 		}

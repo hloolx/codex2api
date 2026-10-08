@@ -520,7 +520,7 @@ export default function ApiReference() {
 
   // 加载 API Key 列表
   useEffect(() => {
-    api.getAPIKeys().then(res => {
+    api.getAPIKeys({ view: 'lite' }).then(res => {
       const keys = (res.keys ?? []).map(k => ({ name: k.name, key: k.raw_key || k.key }))
       setAllKeys(keys)
       if (keys.length > 0) setFirstKey(keys[0].key)

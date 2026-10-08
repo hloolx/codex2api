@@ -24,7 +24,7 @@ func (h *Handler) GenerateImageOnceForAdmin(ctx context.Context, rawBody []byte,
 		return nil, http.StatusInternalServerError, fmt.Errorf("image proxy handler is not initialized")
 	}
 
-	recorder := httptest.NewRecorder()
+	recorder := newAdminImageResponseRecorder()
 	ginCtx, _ := gin.CreateTestContext(recorder)
 	req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", bytes.NewReader(rawBody)).WithContext(ctx)
 	req.Header.Set("Content-Type", "application/json")
@@ -85,7 +85,7 @@ func (h *Handler) GenerateImageEditForAdmin(ctx context.Context, rawBody []byte,
 		return nil, http.StatusInternalServerError, fmt.Errorf("image proxy handler is not initialized")
 	}
 
-	recorder := httptest.NewRecorder()
+	recorder := newAdminImageResponseRecorder()
 	ginCtx, _ := gin.CreateTestContext(recorder)
 	req := httptest.NewRequest(http.MethodPost, "/v1/images/edits", bytes.NewReader(rawBody)).WithContext(ctx)
 	req.Header.Set("Content-Type", "application/json")
@@ -120,6 +120,24 @@ func (h *Handler) GenerateImageEditForAdmin(ctx context.Context, rawBody []byte,
 
 func gjsonGetString(body []byte, path string) string {
 	return gjson.GetBytes(body, path).String()
+}
+
+// Unlike a network ResponseWriter, httptest.ResponseRecorder commits the first
+// informational response. Image keepalives send 102 before the final response;
+// do not let that heartbeat turn a successful image into a failed job.
+type adminImageResponseRecorder struct {
+	*httptest.ResponseRecorder
+}
+
+func newAdminImageResponseRecorder() *adminImageResponseRecorder {
+	return &adminImageResponseRecorder{ResponseRecorder: httptest.NewRecorder()}
+}
+
+func (w *adminImageResponseRecorder) WriteHeader(code int) {
+	if code >= 100 && code < 200 && code != http.StatusSwitchingProtocols {
+		return
+	}
+	w.ResponseRecorder.WriteHeader(code)
 }
 
 // applyAdminScopeBudget 为 in-process 的管理端生图任务计算 scope 预算闸门：

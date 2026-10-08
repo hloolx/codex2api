@@ -62,6 +62,21 @@ func TestAntigravitySettingsRoundTrip(t *testing.T) {
 		t.Fatalf("payload = %+v", payload)
 	}
 
+	// 只改思考内容开关同样保留重定向与覆盖开关。
+	payload = antigravitySettingsResponse{}
+	if err := json.Unmarshal(put(`{"expose_thoughts":true}`).Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if !payload.ExposeThoughts || !payload.RedirectOverridesEffort || payload.ModelRedirects["gemini-3.8-flash"] != "gemini-3.8-flash-high" {
+		t.Fatalf("expose_thoughts payload = %+v", payload)
+	}
+	if !auth.AntigravityExposeThoughts() {
+		t.Fatal("runtime expose_thoughts not applied")
+	}
+	if raw, err := db.LoadAntigravityConfig(context.Background()); err != nil || !strings.Contains(raw, `"expose_thoughts":true`) {
+		t.Fatalf("persisted=%q err=%v", raw, err)
+	}
+
 	for _, bad := range []string{
 		`{"model_redirects":{"gemini-3.8-flash":"gemini-3.6-flash-high"}}`,
 		`{"model_redirects":{"gemini-3.8-flash-high":"gemini-3.8-flash-low"}}`,

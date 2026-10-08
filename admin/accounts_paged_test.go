@@ -1319,3 +1319,32 @@ func TestClaudeAccountListSuccessfulProbeCountsAsSampledWithoutQuotaHeaders(t *t
 		t.Fatalf("Claude successful probe should be sampled: item=%+v", item)
 	}
 }
+
+func TestListAccountsPageSortsByID(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	handler, codexIDs, _ := newPagedAccountsHandler(t)
+	for _, tc := range []struct {
+		order string
+		want  []int64
+	}{
+		{"desc", []int64{codexIDs[2], codexIDs[1], codexIDs[0]}},
+		{"asc", []int64{codexIDs[0], codexIDs[1], codexIDs[2]}},
+	} {
+		recorder := invokeListAccounts(t, handler, "/api/admin/accounts?view=page&channel=codex&page=1&page_size=10&sort=id&order="+tc.order)
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("order=%s status = %d: %s", tc.order, recorder.Code, recorder.Body.String())
+		}
+		var page accountsPageResponse
+		if err := json.Unmarshal(recorder.Body.Bytes(), &page); err != nil {
+			t.Fatalf("decode page: %v", err)
+		}
+		if len(page.Accounts) != len(tc.want) {
+			t.Fatalf("order=%s rows = %d, want %d", tc.order, len(page.Accounts), len(tc.want))
+		}
+		for index, want := range tc.want {
+			if page.Accounts[index].ID != want {
+				t.Fatalf("order=%s row %d id = %d, want %d", tc.order, index, page.Accounts[index].ID, want)
+			}
+		}
+	}
+}

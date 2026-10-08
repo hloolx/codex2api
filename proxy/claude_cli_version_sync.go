@@ -71,7 +71,7 @@ func extractClaudeCLIVersion(raw string) string {
 	return version
 }
 
-func fetchClaudeJSON(ctx context.Context, endpoint string, transport http.RoundTripper, github bool, out interface{}) error {
+func fetchClaudeJSON(ctx context.Context, endpoint, proxyURL string, github bool, out interface{}) error {
 	reqCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, endpoint, nil)
@@ -84,7 +84,8 @@ func fetchClaudeJSON(ctx context.Context, endpoint string, transport http.RoundT
 		req.Header.Set("Accept", "application/vnd.github+json")
 		ApplyGithubAuth(req)
 	}
-	client := &http.Client{Transport: transport, Timeout: 20 * time.Second}
+	client, closeClient := newVersionSyncClient(endpoint, proxyURL, 20*time.Second)
+	defer closeClient()
 	resp, err := client.Do(req)
 	if err != nil {
 		return err
@@ -110,7 +111,7 @@ func fetchClaudeVersionFromGithub(ctx context.Context, proxyURL string) (string,
 		Name    string `json:"name"`
 		TagName string `json:"tag_name"`
 	}
-	if err := fetchClaudeJSON(ctx, endpoint, newCodexStandardTransport(GithubProxyOrDefault(endpoint, proxyURL)), true, &payload); err != nil {
+	if err := fetchClaudeJSON(ctx, endpoint, GithubProxyOrDefault(endpoint, proxyURL), true, &payload); err != nil {
 		return "", err
 	}
 	if v := extractClaudeCLIVersion(payload.TagName); v != "" {
@@ -130,7 +131,7 @@ func fetchClaudeVersionFromNpm(ctx context.Context, proxyURL string) (string, er
 	var payload struct {
 		Latest string `json:"latest"`
 	}
-	if err := fetchClaudeJSON(ctx, endpoint, newCodexStandardTransport(proxyURL), false, &payload); err != nil {
+	if err := fetchClaudeJSON(ctx, endpoint, proxyURL, false, &payload); err != nil {
 		return "", err
 	}
 	if v := extractClaudeCLIVersion(payload.Latest); v != "" {

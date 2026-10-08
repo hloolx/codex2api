@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -385,18 +384,44 @@ func NewAntigravityClient(proxyURL string) (*AntigravityClient, error) {
 	return newAntigravityClient(&http.Client{Transport: cloned, Timeout: 30 * time.Second}, DefaultAntigravityEndpoints), nil
 }
 
+// AntigravityClientVersion is the Antigravity Hub release reported to Cloud
+// Code. The model catalog is gated by client version: older versions are
+// served a reduced catalog (e.g. without per-tier Gemini 3.7/3.8 IDs).
+const AntigravityClientVersion = "2.19.1"
+
+// AntigravityUserAgent is shared by control-plane and generation requests so
+// Cloud Code sees one consistent client version. ANTIGRAVITY_USER_AGENT
+// overrides both.
+func AntigravityUserAgent() string {
+	if userAgent := strings.TrimSpace(os.Getenv(antigravityUserAgentEnv)); userAgent != "" {
+		return userAgent
+	}
+	return "antigravity/hub/" + AntigravityClientVersion + " windows/amd64"
+}
+
+// antigravityVersionFromUserAgent extracts the version from either the
+// "antigravity/hub/<v> <platform>" or legacy "antigravity/<v> <platform>" form.
+func antigravityVersionFromUserAgent(userAgent string) string {
+	product, _, _ := strings.Cut(strings.TrimSpace(userAgent), " ")
+	lower := strings.ToLower(product)
+	for _, prefix := range []string{"antigravity/hub/", "antigravity/"} {
+		if strings.HasPrefix(lower, prefix) {
+			if version := product[len(prefix):]; version != "" {
+				return version
+			}
+		}
+	}
+	return AntigravityClientVersion
+}
+
 func newAntigravityClient(httpClient *http.Client, endpoints AntigravityEndpoints) *AntigravityClient {
 	clients, activeKey := effectiveAntigravityOAuthClients()
-	userAgent := strings.TrimSpace(os.Getenv(antigravityUserAgentEnv))
-	if userAgent == "" {
-		userAgent = fmt.Sprintf("antigravity/1.11.3 %s/%s", runtime.GOOS, runtime.GOARCH)
-	}
 	return &AntigravityClient{
 		httpClient: httpClient,
 		endpoints:  endpoints,
 		oauth:      clients,
 		activeKey:  activeKey,
-		userAgent:  userAgent,
+		userAgent:  AntigravityUserAgent(),
 		now:        time.Now,
 	}
 }
@@ -1050,7 +1075,7 @@ func (c *AntigravityClient) fetchAICredits(ctx context.Context, accessToken stri
 	for _, endpoint := range c.endpoints.AICredits {
 		var response antigravityLoadProjectResponse
 		_, err := c.postJSON(ctx, endpoint, accessToken, map[string]any{
-			"metadata": map[string]any{"ide_type": "ANTIGRAVITY", "ide_version": "1.11.3", "ide_name": "antigravity"},
+			"metadata": map[string]any{"ide_type": "ANTIGRAVITY", "ide_version": antigravityVersionFromUserAgent(c.userAgent), "ide_name": "antigravity"},
 		}, &response)
 		if err != nil {
 			continue
@@ -1058,7 +1083,14 @@ func (c *AntigravityClient) fetchAICredits(ctx context.Context, accessToken stri
 		if response.PaidTier == nil || len(response.PaidTier.AvailableCredits) == 0 {
 			return nil, true
 		}
-		if credits, ok := parseAntigravityNumber(response.PaidTier.AvailableCredits[0].CreditAmount); ok {
+		amount := response.PaidTier.AvailableCredits[0].CreditAmount
+		// Proto3 JSON omits zero-valued fields: an entry without creditAmount
+		// (current clients receive one with only creditType and the usage
+		// minimum) means a zero balance, not an unreadable response.
+		if amount == nil {
+			return &AntigravityAICredits{}, true
+		}
+		if credits, ok := parseAntigravityNumber(amount); ok {
 			return &AntigravityAICredits{Credits: credits}, true
 		}
 	}

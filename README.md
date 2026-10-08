@@ -319,7 +319,7 @@ Each successful budget change receives a read-only generation and is polled by e
 | `POST /v1/videos/edits` / `POST /v1/videos/extensions` | Grok Imagine video edit / extension                                                                                                   |
 | `GET /v1/videos/:id`                                   | Poll video task status (`video.url` rewritten to the gateway content proxy)                                                           |
 | `GET /v1/videos/:id/content`                           | Download the generated video through the gateway (Range supported)                                                                    |
-| `GET /v1/models`                                       | List available models (includes gpt-6-astra, gpt-5.6-sol/terra/luna, gpt-5.5, gpt-5.3-codex-spark, gpt-image-2, grok-imagine-*, etc.) |
+| `GET /v1/models`                                       | List available models (includes gpt-6-astra/sol/luna, gpt-5.6-sol/terra/luna, gpt-5.5, gpt-5.3-codex-spark, gpt-image-2, grok-imagine-*, etc.) |
 | `GET /health`                                          | Health check                                                                                                                          |
 
 > **Pricing**: gpt-5.5 is billed at $5.00/M input and $30.00/M output (standard tier). Priority tier: $12.50/M input, $75.00/M output. Other models follow pricing rules in the billing engine.
@@ -555,6 +555,7 @@ codex2api/
 - `docker-compose.yml` pulls the GHCR image for deployment. `docker-compose.local.yml` uses `build: .` for local source builds.
 - The frontend base path is fixed at `/admin/` for both local development and production.
 - Before manually building the Go binary, run `npm run build` in `frontend/`.
+- For manual builds, pass the same version through `VITE_APP_VERSION` and Go's `-ldflags '-X github.com/codex2api/internal/version.Version=...'`, building the frontend first. For release builds, the dashboard uses the running backend version and shows the frontend build version with a rebuild hint when they differ. This hint does not replace embedded frontend assets; rebuild the frontend and then compile Go to update them.
 - `.env` controls physical runtime settings such as port, database, and Redis. Business settings are stored in the database and managed from the admin dashboard.
 - API keys are stored in the database and configured through the admin dashboard.
 

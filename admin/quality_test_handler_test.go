@@ -148,7 +148,7 @@ func TestQualityTestChannelPayloadsAndOptions(t *testing.T) {
 		t.Fatalf("invalid options: %+v", options)
 	}
 	ag := newAntigravityConnectionTestAccount()
-	if err := h.validateQualityTestForAccount(context.Background(), ag, qualityTestRequest{Model: "gemini-3.5-flash-low", ReasoningEffort: "high"}); err == nil {
+	if err := h.validateQualityTestForAccount(context.Background(), ag, qualityTestRequest{Model: "gemini-3.6-flash-low", ReasoningEffort: "high"}); err == nil {
 		t.Fatal("fixed-tier models must reject a conflicting effort")
 	}
 	claude := &auth.Account{UpstreamType: auth.UpstreamClaude}

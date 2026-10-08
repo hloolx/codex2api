@@ -6,12 +6,11 @@ import (
 )
 
 func newIndexedRoutingTestStore(accounts []*Account) *Store {
-	store := &Store{
+	store := (&Store{
 		accounts:          accounts,
-		maxConcurrency:    1,
 		routingSchedulers: make(map[int64]*routingSchedulerEntry),
 		schedulerMetrics:  newSchedulerRuntimeMetrics(),
-	}
+	}).withMaxConcurrency(1)
 	store.availability.Store(newAvailabilityHub())
 	store.rebuildAccountIndex()
 	store.publishAccountSnapshot(accounts)

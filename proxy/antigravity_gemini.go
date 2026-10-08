@@ -5,13 +5,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
 
 	"github.com/codex2api/auth"
-	"github.com/tidwall/gjson"
 )
 
 // ExecuteAntigravityGeminiRequest forwards a native Gemini generateContent request
@@ -150,6 +150,9 @@ func geminiNativeToAntigravityEnvelope(rawBody []byte, project, model string) ([
 	antigravityApplyNativeGeminiThinkingConfig(request, model, wireModel)
 	antigravityNormalizeNativeGeminiResponseSchema(request)
 	antigravitySanitizeNativeGeminiThoughtSignatures(request, wireModel)
+	// Strip client scaffolding before the session id is derived from the
+	// contents, so the id stays stable across turns.
+	antigravityNormalizeNativeGeminiContents(request)
 	contents, _ := request["contents"].([]any)
 	request["sessionId"] = antigravitySessionID(nil, contents)
 	envelope := map[string]any{
@@ -180,7 +183,11 @@ func antigravityApplyNativeGeminiThinkingConfig(request map[string]any, publicMo
 		return
 	}
 	if level, enabled := antigravityGeminiThinkingLevel(publicModel, wireModel, nil); enabled {
-		genConfig["thinkingConfig"] = map[string]any{"thinkingLevel": level}
+		thinkingConfig := map[string]any{"thinkingLevel": level}
+		if auth.AntigravityExposeThoughts() {
+			thinkingConfig["includeThoughts"] = true
+		}
+		genConfig["thinkingConfig"] = thinkingConfig
 		return
 	}
 	if budget, enabled := antigravityGeminiThinkingBudget(publicModel, wireModel, nil); enabled {
@@ -342,21 +349,6 @@ func antigravityGeminiPartHasThoughtSignature(part map[string]any) bool {
 	return false
 }
 
-func geminiNativeUsageFromBody(body []byte) (inputTokens, outputTokens, reasoningTokens, totalTokens int) {
-	usage := gjson.GetBytes(body, "usageMetadata")
-	if !usage.Exists() {
-		return 0, 0, 0, 0
-	}
-	inputTokens = int(usage.Get("promptTokenCount").Int())
-	outputTokens = int(usage.Get("candidatesTokenCount").Int())
-	reasoningTokens = int(usage.Get("thoughtsTokenCount").Int())
-	totalTokens = int(usage.Get("totalTokenCount").Int())
-	if totalTokens == 0 {
-		totalTokens = inputTokens + outputTokens + reasoningTokens
-	}
-	return inputTokens, outputTokens, reasoningTokens, totalTokens
-}
-
 func normalizeGeminiPublicModel(model string) string {
 	model = strings.TrimSpace(model)
 	model = strings.TrimPrefix(model, "models/")
@@ -372,19 +364,70 @@ func antigravityObfuscateNativeGeminiSystemInstruction(request map[string]any) {
 	if !ok {
 		return
 	}
-	for index, part := range parts {
+	kept := make([]any, 0, len(parts))
+	for _, part := range parts {
 		partMap, ok := part.(map[string]any)
 		if !ok {
+			kept = append(kept, part)
 			continue
 		}
 		text, ok := partMap["text"].(string)
-		if !ok || strings.TrimSpace(text) == "" {
+		if !ok {
+			kept = append(kept, part)
+			continue
+		}
+		text = normalizeClientScaffolding(text)
+		if text == "" {
 			continue
 		}
 		partMap["text"] = antigravityObfuscateSystemInstruction(text)
-		parts[index] = partMap
+		kept = append(kept, partMap)
 	}
-	systemInstruction["parts"] = parts
+	if len(kept) == 0 {
+		delete(request, "systemInstruction")
+		return
+	}
+	systemInstruction["parts"] = kept
+}
+
+// antigravityNormalizeNativeGeminiContents neutralizes client scaffolding in
+// native Gemini contents in place. Parts are rewritten rather than dropped so
+// the envelope keeps the exact shape the caller sent; an emptied text part
+// becomes an empty string, which is a shape this codebase already produces
+// elsewhere.
+func antigravityNormalizeNativeGeminiContents(request map[string]any) {
+	if !clientScaffoldingStripEnabled() {
+		return
+	}
+	contents, ok := request["contents"].([]any)
+	if !ok || len(contents) == 0 {
+		return
+	}
+	for index, raw := range contents {
+		content, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		parts, ok := content["parts"].([]any)
+		if !ok {
+			continue
+		}
+		for partIndex, rawPart := range parts {
+			part, ok := rawPart.(map[string]any)
+			if !ok {
+				continue
+			}
+			text, ok := part["text"].(string)
+			if !ok {
+				continue
+			}
+			part["text"] = normalizeClientScaffolding(text)
+			parts[partIndex] = part
+		}
+		content["parts"] = parts
+		contents[index] = content
+	}
+	request["contents"] = contents
 }
 
 func antigravitySanitizeNativeGeminiTools(request map[string]any, nameMap map[string]string) {
@@ -832,17 +875,16 @@ func ensureGeminiFinishReason(body []byte) []byte {
 }
 
 type antigravityNativeGeminiSSEBody struct {
-	source          io.ReadCloser
-	reader          *bufio.Reader
-	queue           bytes.Buffer
-	reverseNameMap  map[string]string
-	terminal        bool
-	sawResponse     bool
-	sawFinishReason bool
+	source         io.ReadCloser
+	events         *antigravitySSEReader
+	queue          bytes.Buffer
+	reverseNameMap map[string]string
+	terminalErr    error
+	sawTerminal    bool
 }
 
 func newAntigravityNativeGeminiSSEResponseBody(r io.ReadCloser, reverseNameMap map[string]string) io.ReadCloser {
-	return &antigravityNativeGeminiSSEBody{source: r, reader: bufio.NewReader(r), reverseNameMap: reverseNameMap}
+	return &antigravityNativeGeminiSSEBody{source: r, events: newAntigravitySSEReader(bufio.NewReader(r)), reverseNameMap: reverseNameMap}
 }
 
 func (b *antigravityNativeGeminiSSEBody) Close() error {
@@ -861,63 +903,90 @@ func (b *antigravityNativeGeminiSSEBody) enqueue(chunk []byte) {
 	b.queue.WriteString("\n\n")
 }
 
-func (b *antigravityNativeGeminiSSEBody) observe(chunk []byte) {
-	var payload map[string]any
-	if json.Unmarshal(chunk, &payload) != nil {
-		return
+func (b *antigravityNativeGeminiSSEBody) observe(payload map[string]any) {
+	switch strings.ToUpper(geminiFinishReason(payload)) {
+	case "", "NONE", "FINISH_REASON_UNSPECIFIED":
+	default:
+		b.sawTerminal = true
 	}
-	if lenGeminiCandidates(payload) > 0 {
-		b.sawResponse = true
-	}
-	if finishReason := geminiFinishReason(payload); finishReason != "" {
-		b.sawFinishReason = true
+	if feedback, ok := payload["promptFeedback"].(map[string]any); ok {
+		reason, _ := feedback["blockReason"].(string)
+		switch strings.ToUpper(strings.TrimSpace(reason)) {
+		case "", "NONE", "BLOCK_REASON_UNSPECIFIED":
+		default:
+			b.sawTerminal = true
+		}
 	}
 }
 
-func (b *antigravityNativeGeminiSSEBody) syntheticTerminalChunk() []byte {
-	payload := map[string]any{
-		"candidates": []any{
-			map[string]any{
-				"content": map[string]any{
-					"role":  "model",
-					"parts": []any{map[string]any{"text": ""}},
-				},
-				"finishReason": "STOP",
-			},
-		},
+func (b *antigravityNativeGeminiSSEBody) endError(err error) error {
+	if err != nil && !errors.Is(err, io.EOF) {
+		return err
 	}
-	out, _ := json.Marshal(payload)
-	return out
+	if b.sawTerminal {
+		return io.EOF
+	}
+	return fmt.Errorf("antigravity Gemini stream ended before a terminal response: %w", io.ErrUnexpectedEOF)
+}
+
+// The final event is drained before Read reports the end of the stream,
+// including when the stream has no trailing blank line.
+func (b *antigravityNativeGeminiSSEBody) readEvent() ([]byte, error) {
+	return b.events.next()
+}
+
+func antigravityNativeGeminiStreamPayload(data []byte) (map[string]any, error) {
+	payload, err := decodeAntigravityStreamEnvelope(data)
+	if err != nil {
+		return nil, fmt.Errorf("decode antigravity Gemini stream event: %w", err)
+	}
+	for {
+		if upstreamError, ok := payload["error"]; ok {
+			return nil, newAntigravityStreamError(upstreamError)
+		}
+		response, ok := payload["response"].(map[string]any)
+		if !ok {
+			return payload, nil
+		}
+		payload = response
+	}
 }
 
 func (b *antigravityNativeGeminiSSEBody) Read(p []byte) (int, error) {
+	if len(p) == 0 {
+		return 0, nil
+	}
 	for b.queue.Len() == 0 {
-		if b.terminal {
-			return 0, io.EOF
+		if b.terminalErr != nil {
+			return 0, b.terminalErr
 		}
-		data, err := readSSEDataLine(b.reader)
-		if err != nil {
-			if b.sawResponse && !b.sawFinishReason {
-				b.enqueue(b.syntheticTerminalChunk())
-			}
-			b.terminal = true
-			continue
-		}
+		data, readErr := b.readEvent()
 		trimmed := bytes.TrimSpace(data)
 		if len(trimmed) == 0 {
+			if readErr != nil {
+				b.terminalErr = b.endError(readErr)
+			}
 			continue
 		}
 		if bytes.Equal(trimmed, []byte("[DONE]")) {
-			if b.sawResponse && !b.sawFinishReason {
-				b.enqueue(b.syntheticTerminalChunk())
+			b.terminalErr = b.endError(readErr)
+			continue
+		}
+		payload, err := antigravityNativeGeminiStreamPayload(trimmed)
+		if err != nil {
+			b.terminalErr = err
+			if readErr != nil && !errors.Is(readErr, io.EOF) {
+				b.terminalErr = readErr
 			}
-			b.terminal = true
 			continue
 		}
 		chunk := unwrapAntigravityNativeGeminiChunk(trimmed)
 		chunk = antigravityRestoreNativeGeminiResponseNames(chunk, b.reverseNameMap)
-		b.observe(chunk)
+		b.observe(payload)
 		b.enqueue(chunk)
+		if readErr != nil {
+			b.terminalErr = b.endError(readErr)
+		}
 	}
 	return b.queue.Read(p)
 }

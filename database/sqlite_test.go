@@ -1522,6 +1522,7 @@ func TestSQLiteSystemSettingsPersistsFirstTokenTimeoutSeconds(t *testing.T) {
 		AffinityMode:                      "bounded",
 		BackgroundConfig:                  "{}",
 		ShowFullUsageNumbers:              true,
+		ShowUpstreamModelMismatch:         false,
 		PublicKeyUsagePageEnabled:         true,
 		PublicImageStudioPageEnabled:      true,
 		CodexWSHideUpstreamErrors:         true,
@@ -1574,6 +1575,9 @@ func TestSQLiteSystemSettingsPersistsFirstTokenTimeoutSeconds(t *testing.T) {
 	}
 	if !settings.ShowFullUsageNumbers {
 		t.Fatal("ShowFullUsageNumbers = false, want true")
+	}
+	if settings.ShowUpstreamModelMismatch {
+		t.Fatal("ShowUpstreamModelMismatch = true, want false")
 	}
 	if !settings.PublicKeyUsagePageEnabled {
 		t.Fatal("PublicKeyUsagePageEnabled = false, want true")
@@ -2581,6 +2585,82 @@ func TestAPIKeySelfUsageReportPaginatesRecentLogs(t *testing.T) {
 	}
 	if clamped.RecentLogsPage != 3 || len(clamped.RecentLogs) != 1 || clamped.RecentLogs[0].Model != "model-1" {
 		t.Fatalf("clamped page logs = page %d rows %+v, want page 3 with model-1", clamped.RecentLogsPage, clamped.RecentLogs)
+	}
+}
+
+func TestSQLiteAPIKeySelfUsageReportLogFilters(t *testing.T) {
+	db, err := New("sqlite", filepath.Join(t.TempDir(), "codex2api.db"))
+	if err != nil {
+		t.Fatalf("New(sqlite) 返回错误: %v", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	keyID, err := db.InsertAPIKey(ctx, "Client", "sk-self-usage-filter-1234567890")
+	if err != nil {
+		t.Fatalf("InsertAPIKey 返回错误: %v", err)
+	}
+	now := time.Now()
+	insertUsage := func(channel, endpoint, model, effectiveModel string, statusCode int, stream bool) {
+		t.Helper()
+		if _, err := db.conn.ExecContext(ctx, `
+			INSERT INTO usage_logs (
+				api_key_id, api_key_name, api_key_masked, channel, endpoint, inbound_endpoint, model, effective_model,
+				status_code, stream, total_tokens, user_billed, created_at
+			)
+			VALUES ($1, 'client', 'sk-...test', $2, $3, $3, $4, $5, $6, $7, 10, 0, $8)
+		`, keyID, channel, endpoint, model, effectiveModel, statusCode, stream, sqliteTimeParam(now)); err != nil {
+			t.Fatalf("insert usage log: %v", err)
+		}
+	}
+	insertUsage("codex", "/v1/responses", "gpt-5.5", "", 200, true)
+	insertUsage("codex", "/v1/responses", "gpt-5.5", "", 429, true)
+	insertUsage("claude", "/v1/messages", "claude-opus-5", "", 200, false)
+	insertUsage("claude", "/v1/messages", "claude-opus-5", "", 502, true)
+	insertUsage("codex", "/v1/chat/completions", "alias-model", "gpt-5.5", 200, false)
+
+	cases := []struct {
+		name   string
+		filter APIKeySelfLogFilter
+		want   int64
+	}{
+		{"none", APIKeySelfLogFilter{}, 5},
+		{"model matches requested or effective", APIKeySelfLogFilter{Model: "gpt-5.5"}, 3},
+		{"endpoint", APIKeySelfLogFilter{Endpoint: "/v1/messages"}, 2},
+		{"success", APIKeySelfLogFilter{Status: "success"}, 3},
+		{"error", APIKeySelfLogFilter{Status: "error"}, 2},
+		{"4xx", APIKeySelfLogFilter{Status: "4xx"}, 1},
+		{"5xx", APIKeySelfLogFilter{Status: "5xx"}, 1},
+		{"429", APIKeySelfLogFilter{Status: "429"}, 1},
+		{"stream", APIKeySelfLogFilter{Stream: "stream"}, 3},
+		{"sync", APIKeySelfLogFilter{Stream: "sync"}, 2},
+		{"channel codex", APIKeySelfLogFilter{Channel: "codex"}, 3},
+		{"channel claude", APIKeySelfLogFilter{Channel: "claude"}, 2},
+		{"channel grok", APIKeySelfLogFilter{Channel: "grok"}, 0},
+		{"combined", APIKeySelfLogFilter{Model: "claude-opus-5", Status: "error", Stream: "stream"}, 1},
+	}
+	for _, tc := range cases {
+		report, err := db.GetAPIKeySelfUsageReportFiltered(ctx, keyID, now.Add(-time.Hour), now.Add(time.Hour), 1, 25, tc.filter)
+		if err != nil {
+			t.Fatalf("%s: GetAPIKeySelfUsageReportFiltered 返回错误: %v", tc.name, err)
+		}
+		if report.RecentLogsTotal != tc.want || int64(len(report.RecentLogs)) != tc.want {
+			t.Fatalf("%s: total=%d rows=%d, want %d", tc.name, report.RecentLogsTotal, len(report.RecentLogs), tc.want)
+		}
+		if report.Summary.Requests != 5 {
+			t.Fatalf("%s: summary requests=%d, want 5 (log filters must not affect summary)", tc.name, report.Summary.Requests)
+		}
+		if len(report.LogModels) != 3 || len(report.LogEndpoints) != 3 {
+			t.Fatalf("%s: log options models=%v endpoints=%v, want 3 each", tc.name, report.LogModels, report.LogEndpoints)
+		}
+	}
+
+	report, err := db.GetAPIKeySelfUsageReportFiltered(ctx, keyID, now.Add(-time.Hour), now.Add(time.Hour), 1, 25, APIKeySelfLogFilter{Endpoint: "/v1/messages"})
+	if err != nil {
+		t.Fatalf("GetAPIKeySelfUsageReportFiltered 返回错误: %v", err)
+	}
+	if report.RecentLogs[0].Channel != "claude" {
+		t.Fatalf("channel = %q, want claude", report.RecentLogs[0].Channel)
 	}
 }
 

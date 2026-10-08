@@ -1,0 +1,10 @@
+ModelTrace
+Copyright 2026 xqy2006
+https://github.com/xqy2006/ModelTrace
+
+This repository includes the ModelTrace unified fingerprint bank and a Go port
+of its browser challenge generator and fingerprint scoring core, pinned to
+upstream revision d4131b30243dfa05e70180b5eedde742103f1d73.
+
+The upstream work is licensed under the MIT License. See LICENSE in this
+directory.

@@ -8,7 +8,7 @@ export function SegmentedPillGroup<T extends string>({
 }: {
   value: T
   onChange: (value: T) => void
-  options: Array<{ label: string; value: T; icon?: ReactNode }>
+  options: Array<{ label: ReactNode; value: T; icon?: ReactNode; disabled?: boolean; title?: string }>
   label: string
   disabled?: boolean
   className?: string
@@ -20,7 +20,8 @@ export function SegmentedPillGroup<T extends string>({
           key={option.value}
           type="button"
           variant="ghost"
-          disabled={disabled}
+          disabled={disabled || option.disabled}
+          title={option.title}
           aria-pressed={value === option.value}
           onClick={() => onChange(option.value)}
           className={cn(

@@ -185,7 +185,7 @@ export default function PromptFilterNewAPIBindings() {
     setError('')
     try {
       const [keyResult, bindingResult] = await Promise.all([
-        api.getAPIKeys(),
+        api.getAPIKeys({ view: 'lite' }),
         api.getPromptFilterNewAPIBindings(),
       ])
       setAPIKeys(keyResult.keys ?? [])

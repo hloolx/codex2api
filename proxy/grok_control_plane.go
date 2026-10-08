@@ -94,6 +94,8 @@ func FetchGrokControlPlaneFact(ctx context.Context, account *auth.Account, proxy
 	if account == nil {
 		return result, fmt.Errorf("Grok account is nil")
 	}
+	ctx, finish := grokReadContext(ctx, account.ID(), string(kind))
+	defer func() { finish(result.StatusCode) }()
 	baseURL, bearer := account.GrokCredentials()
 	if baseURL == "" || bearer == "" {
 		return result, fmt.Errorf("Grok account has no usable credential")

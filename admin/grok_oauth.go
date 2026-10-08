@@ -121,7 +121,7 @@ func (h *Handler) StartGrokDeviceAuth(c *gin.Context) {
 		writeError(c, http.StatusBadRequest, err.Error())
 		return
 	}
-	models := auth.NormalizeAccountModels(req.Models)
+	models := auth.FilterGrokModelsForAuthKind(auth.GrokAuthKindOAuth, auth.NormalizeAccountModels(req.Models))
 	for _, model := range models {
 		if err := security.ValidateModelName(model); err != nil {
 			writeError(c, http.StatusBadRequest, fmt.Sprintf("模型名称无效: %s", model))

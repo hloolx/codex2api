@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Check, CheckCircle2, ChevronRight, Copy, Loader2, RefreshCw, XCircle } from "lucide-react";
+import { Activity, Check, CheckCircle2, ChevronRight, Copy, Loader2, RefreshCw, ShieldCheck, XCircle } from "lucide-react";
 import { api, getAdminKey } from "../api";
 import type { AccountRow } from "../types";
 import { claudeTestTokenMetrics, readClaudeTestEvents } from "../lib/claudeConnectionTest";
@@ -8,10 +8,11 @@ import type { ClaudeTestDiagnostics } from "../lib/claudeConnectionTest";
 import { cn } from "../lib/utils";
 import { useToast } from "../hooks/useToast";
 import Modal from "./Modal";
+import ModelDetectorModal from "./ModelDetectorModal";
 import { Button } from "./ui/button";
 import { Select } from "./ui/select";
 
-type TestStatus = "connecting" | "streaming" | "success" | "error";
+type TestStatus = "idle" | "connecting" | "streaming" | "success" | "error";
 
 export default function ClaudeConnectionTestModal({ account, onClose, onSettled }: {
   account: AccountRow;
@@ -20,14 +21,16 @@ export default function ClaudeConnectionTestModal({ account, onClose, onSettled 
 }) {
   const { t } = useTranslation();
   const { showToast } = useToast();
-  const [status, setStatus] = useState<TestStatus>("connecting");
-  const [running, setRunning] = useState(true);
+  // 打开弹窗只做准备,由操作者选好模型后点击"开始测试"才真正发请求。
+  const [status, setStatus] = useState<TestStatus>("idle");
+  const [running, setRunning] = useState(false);
   const [output, setOutput] = useState("");
   const [errorMessage, setErrorMessage] = useState("");
   const [diagnostics, setDiagnostics] = useState<ClaudeTestDiagnostics | null>(null);
-  const [attempt, setAttempt] = useState(0);
   const [copied, setCopied] = useState(false);
+  const [detectorOpen, setDetectorOpen] = useState(false);
   const settledRef = useRef(false);
+  const controllerRef = useRef<AbortController | null>(null);
   const onSettledRef = useRef(onSettled);
   const translationRef = useRef(t);
   onSettledRef.current = onSettled;
@@ -74,14 +77,13 @@ export default function ClaudeConnectionTestModal({ account, onClose, onSettled 
     onSettledRef.current();
   }, []);
 
-  useEffect(() => {
-    if (!model) {
-      setStatus("error");
-      setRunning(false);
-      setErrorMessage(translationRef.current("claude.testNoModel"));
-      return;
-    }
+  useEffect(() => () => controllerRef.current?.abort(), []);
+
+  const startTest = useCallback(() => {
+    if (!model) return;
+    controllerRef.current?.abort();
     const controller = new AbortController();
+    controllerRef.current = controller;
     settledRef.current = false;
     setStatus("connecting");
     setRunning(true);
@@ -144,8 +146,7 @@ export default function ClaudeConnectionTestModal({ account, onClose, onSettled 
       }
     };
     void run();
-    return () => controller.abort();
-  }, [account.id, model, attempt, markSettled]);
+  }, [account.id, model, markSettled]);
 
   const metrics = claudeTestTokenMetrics(diagnostics?.usage);
   const tokenLabels = {
@@ -171,8 +172,9 @@ export default function ClaudeConnectionTestModal({ account, onClose, onSettled 
   ].filter((item) => item.value);
   const modeLabel = diagnostics?.fingerprint_mode === "force" ? t("claude.fpForce")
     : diagnostics?.fingerprint_mode === "preserve" ? t("claude.fpPreserve") : "—";
-  const statusLabel = status === "connecting" ? t("accounts.connecting") : status === "streaming" ? t("accounts.receivingResponse") : status === "success" ? t("accounts.testSuccess") : t("accounts.testFailed");
-  const StatusIcon = running ? Loader2 : status === "success" ? CheckCircle2 : XCircle;
+  const statusLabel = status === "idle" ? t("claude.testReady") : status === "connecting" ? t("accounts.connecting") : status === "streaming" ? t("accounts.receivingResponse") : status === "success" ? t("accounts.testSuccess") : t("accounts.testFailed");
+  const StatusIcon = running ? Loader2 : status === "idle" ? Activity : status === "success" ? CheckCircle2 : XCircle;
+  const alertMessage = errorMessage || (!model ? t("claude.testNoModel") : "");
   const copyDiagnostics = async () => {
     try {
       await navigator.clipboard.writeText(JSON.stringify({ status, error: errorMessage || undefined, output, diagnostics }, null, 2));
@@ -183,6 +185,7 @@ export default function ClaudeConnectionTestModal({ account, onClose, onSettled 
   };
 
   return (
+    <>
     <Modal
       show
       title={t("accounts.testConnectionTitle", { account: account.email || account.name || `#${account.id}` })}
@@ -191,20 +194,26 @@ export default function ClaudeConnectionTestModal({ account, onClose, onSettled 
       onClose={onClose}
       footer={(
         <div className="flex w-full flex-wrap items-center justify-end gap-2">
-          <Button variant="ghost" size="sm" className="mr-auto" disabled={running || !diagnostics} onClick={() => void copyDiagnostics()}>
-            {copied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
-            {copied ? t("claude.testCopied") : t("claude.testCopy")}
-          </Button>
+          <div className="mr-auto flex flex-wrap items-center gap-2">
+            <Button variant="ghost" size="sm" disabled={running || !diagnostics} onClick={() => void copyDiagnostics()}>
+              {copied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
+              {copied ? t("claude.testCopied") : t("claude.testCopy")}
+            </Button>
+            <Button variant="ghost" size="sm" disabled={running || !model} onClick={() => setDetectorOpen(true)}>
+              <ShieldCheck className="size-3.5" />
+              {t("accounts.detectorOpen")}
+            </Button>
+          </div>
           <Button variant="outline" size="sm" onClick={onClose}>{t("common.close")}</Button>
-          <Button size="sm" disabled={running || !model} onClick={() => setAttempt((value) => value + 1)}>
-            <RefreshCw className={cn("size-3.5", running && "animate-spin")} />{t("claude.testRetry")}
+          <Button size="sm" disabled={running || !model} onClick={startTest}>
+            <RefreshCw className={cn("size-3.5", running && "animate-spin")} />{t(status === "idle" ? "accounts.testStart" : "claude.testRetry")}
           </Button>
         </div>
       )}
     >
       <div className="space-y-4">
-        <div className={cn("flex flex-wrap items-center gap-3 rounded-xl border px-3 py-3", running ? "border-primary/20 bg-primary/5" : status === "success" ? "border-emerald-500/20 bg-emerald-500/5" : "border-destructive/20 bg-destructive/5")}>
-          <StatusIcon className={cn("size-5 shrink-0", running ? "animate-spin text-primary" : status === "success" ? "text-emerald-500" : "text-destructive")} />
+        <div className={cn("flex flex-wrap items-center gap-3 rounded-xl border px-3 py-3", running ? "border-primary/20 bg-primary/5" : status === "idle" ? "border-border/70 bg-muted/20" : status === "success" ? "border-emerald-500/20 bg-emerald-500/5" : "border-destructive/20 bg-destructive/5")}>
+          <StatusIcon className={cn("size-5 shrink-0", running ? "animate-spin text-primary" : status === "idle" ? "text-muted-foreground" : status === "success" ? "text-emerald-500" : "text-destructive")} />
           <div className="min-w-0 flex-1">
             <p className="text-sm font-semibold text-foreground" role="status">{statusLabel}</p>
             <p className="mt-0.5 text-[11px] text-muted-foreground">Claude · Messages API</p>
@@ -212,7 +221,7 @@ export default function ClaudeConnectionTestModal({ account, onClose, onSettled 
           <Select compact className="w-full min-w-0 sm:w-60" value={model} onValueChange={(value) => { userPickedRef.current = true; setModel(value); }} disabled={running} options={modelOptions.map((item) => ({ value: item, label: cooled.has(item.toLowerCase()) ? `${item} · ${t("claude.testModelCooling")}` : item }))} />
         </div>
 
-        {errorMessage ? <div role="alert" className="break-words rounded-lg border border-destructive/20 bg-destructive/5 px-3 py-2.5 text-xs leading-relaxed text-destructive">{errorMessage}</div> : null}
+        {alertMessage ? <div role="alert" className="break-words rounded-lg border border-destructive/20 bg-destructive/5 px-3 py-2.5 text-xs leading-relaxed text-destructive">{alertMessage}</div> : null}
 
         <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
           {timing.map((item) => (
@@ -255,7 +264,7 @@ export default function ClaudeConnectionTestModal({ account, onClose, onSettled 
 
         <section className="space-y-2">
           <h3 className="text-xs font-semibold">{t("claude.testReply")}</h3>
-          <pre className="max-h-52 overflow-auto whitespace-pre-wrap break-words rounded-xl border border-border/70 bg-muted/20 p-3 font-mono text-xs leading-relaxed">{output || (running ? t("common.loading") : t("claude.testNoText"))}</pre>
+          <pre className="max-h-52 overflow-auto whitespace-pre-wrap break-words rounded-xl border border-border/70 bg-muted/20 p-3 font-mono text-xs leading-relaxed">{output || (running ? t("common.loading") : status === "idle" ? "—" : t("claude.testNoText"))}</pre>
         </section>
 
         {diagnostics?.response_headers?.length ? (
@@ -292,5 +301,14 @@ export default function ClaudeConnectionTestModal({ account, onClose, onSettled 
         ) : null}
       </div>
     </Modal>
+    {detectorOpen ? (
+      <ModelDetectorModal
+        account={account}
+        requestModels={modelOptions}
+        defaultModel={model}
+        onClose={() => setDetectorOpen(false)}
+      />
+    ) : null}
+    </>
   );
 }

@@ -67,6 +67,42 @@ func TestParseGrokModelCatalogRichMetadata(t *testing.T) {
 	}
 }
 
+func TestParseGrokReasoningMenuPrefersWireValue(t *testing.T) {
+	body := []byte(`{"data":[{"model":"grok-4.7","reasoning_effort":"high","reasoning_efforts":[
+		{"id":"extra","value":"xhigh","label":"Extra High","default":true},
+		{"id":"high"},
+		{"value":"not-a-tier"},
+		"low"
+	]}]}`)
+	got, err := ParseGrokModelCatalog(body, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || len(got[0].ReasoningEfforts) != 4 {
+		t.Fatalf("efforts = %#v", got)
+	}
+	if got[0].ReasoningEfforts[0].ID != "xhigh" || got[0].ReasoningEfforts[1].ID != "high" || got[0].ReasoningEfforts[3].ID != "low" {
+		t.Fatalf("wire values = %#v", got[0].ReasoningEfforts)
+	}
+	routes := grokCatalogToRoutingModels(got)
+	want := []string{"xhigh", "high", "low"}
+	if len(routes) != 1 || routes[0].ReasoningEffort != "high" || !slicesEqual(routes[0].ReasoningEfforts, want) {
+		t.Fatalf("route menu = %#v", routes)
+	}
+}
+
+func slicesEqual(got, want []string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			return false
+		}
+	}
+	return true
+}
+
 func TestFetchGrokModelCatalogETagsAnd304(t *testing.T) {
 	var requestETag string
 	var requestHeader http.Header
