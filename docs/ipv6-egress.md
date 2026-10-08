@@ -28,10 +28,13 @@ exhaustion, invalid requests and policy rejections do not rotate addresses.
 Neither a 5xx nor a rotation is a model-quality failure or proof of IP throttling.
 
 HTTP, WebSocket, maintenance requests and OAuth use the account's source binding.
-OAuth refresh is never replayed transparently. HTTP and WebSocket stream preflight
+OAuth refresh is never replayed transparently. Connection pools remain isolated
+by purpose and TLS profile: business, maintenance, subscription, OAuth and
+Basispoints share an account source address but never a pooled connection. HTTP and WebSocket stream preflight
 buffers only creation metadata, up to 64 KiB; it stops at the first output event.
 Visible text, reasoning and tool events are never replayed by this feature.
-Failures reporting output usage are also not replayed. Existing active streams
+Failures reporting token usage are also not replayed. Errors after output and
+premature stream closure rotate the source for subsequent requests only. Existing active streams
 keep their connection when another request rotates the account; new exchanges
 use the new address and WebSocket continuation reuse respects the source route.
 

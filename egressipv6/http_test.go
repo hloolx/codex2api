@@ -1,11 +1,66 @@
 package egressipv6
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"strings"
 	"testing"
 )
+
+func TestIPv6HTTPFailureAfterOutputRotatesWithoutReplay(t *testing.T) {
+	m, id := httpFixture(t)
+	calls := 0
+	wire := "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}\n\ndata: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":\"server_error\"}}}\n\n"
+	c := WrapClient(m, id, &http.Client{}, func(string) http.RoundTripper {
+		return roundTripFunc(func(*http.Request) (*http.Response, error) {
+			calls++
+			return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"text/event-stream"}}, Body: io.NopCloser(strings.NewReader(wire))}, nil
+		})
+	}, true)
+	req, _ := http.NewRequest("POST", "https://example.test/responses", strings.NewReader("body"))
+	resp, err := c.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	got, err := io.ReadAll(resp.Body)
+	if err != nil || string(got) != wire || calls != 1 {
+		t.Fatalf("replayed or changed stream: calls=%d err=%v", calls, err)
+	}
+	route, err := m.Acquire(context.Background(), id)
+	if err != nil || route.Binding.IP != "2604::2" || route.Binding.Rotations != 1 {
+		t.Fatalf("did not rotate for next request: %+v %v", route, err)
+	}
+}
+
+func TestIPv6StreamObserverBoundsAndSuccessfulTerminal(t *testing.T) {
+	for _, wire := range []string{
+		"data: {\"type\":\"response.completed\"}\n\n",
+		"data: " + strings.Repeat("x", 200*1024) + "\n\ndata: {\"type\":\"response.completed\"}\n\n",
+	} {
+		calls := 0
+		body := &observedSSEBody{ReadCloser: io.NopCloser(strings.NewReader(wire)), retry5xx: true, onFailure: func(string) { calls++ }}
+		var got strings.Builder
+		chunk := make([]byte, 13)
+		for {
+			n, err := body.Read(chunk)
+			got.Write(chunk[:n])
+			if len(body.line) > 64*1024 || len(body.data) > 64*1024 {
+				t.Fatal("unbounded parser")
+			}
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+		if calls != 0 || got.String() != wire {
+			t.Fatalf("changed successful stream: %d", calls)
+		}
+	}
+}
 
 func TestIPv6SSEPreflightPreservesEveryByte(t *testing.T) {
 	cases := []struct {

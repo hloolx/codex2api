@@ -7642,6 +7642,7 @@
       "http_502": "Upstream 502",
       "http_503": "Upstream 503",
       "http_504": "Upstream 504",
+      "stream_disconnected": "Upstream stream disconnected",
       "connect_failed": "Connection failed"
     }
   }

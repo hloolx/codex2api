@@ -2686,6 +2686,7 @@
       "http_502": "上游 502",
       "http_503": "上游 503",
       "http_504": "上游 504",
+      "stream_disconnected": "上游串流連線中斷",
       "connect_failed": "連線失敗"
     }
   }

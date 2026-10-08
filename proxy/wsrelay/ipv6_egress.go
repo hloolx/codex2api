@@ -127,5 +127,13 @@ func (r *WsResponse) ReadStream(callback func([]byte) bool) error {
 		defer replacement.Close()
 		return replacement.ReadStream(callback)
 	}
+	if err != nil && a.ctx.Err() == nil {
+		r.mu.Lock()
+		closed := r.closed
+		r.mu.Unlock()
+		if !closed {
+			_, _ = a.manager.Rotate(a.ctx, a.accountID, a.route.Binding.IP, "stream_disconnected")
+		}
+	}
 	return err
 }
