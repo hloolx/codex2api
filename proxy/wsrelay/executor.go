@@ -100,8 +100,8 @@ func NewExecutorWithManager(manager *Manager) *Executor {
 	}
 }
 
-// ExecuteRequestViaWebsocket 通过 WebSocket 发送请求
-func (e *Executor) ExecuteRequestViaWebsocket(
+// executeRequestViaWebsocket executes one request using a resolved, stable route.
+func (e *Executor) executeRequestViaWebsocket(
 	ctx context.Context,
 	account *auth.Account,
 	requestBody []byte,
@@ -139,7 +139,7 @@ func (e *Executor) ExecuteRequestViaWebsocket(
 
 	// 出口链路统一由 ResolveCodexWebsocketEgress 决定(Resin > 代理 > 直连):
 	// Resin 模式下 WS 地址改写为反代路径,拨号侧(createConnection)同样按它跳过代理。
-	egress := proxy.ResolveCodexRequestEgress(ctx, account, wsURL, effectiveProxyURL(account, proxyOverride), true)
+	egress := proxy.ResolveCodexWebsocketEgress(account, wsURL, effectiveProxyURL(account, proxyOverride))
 	wsURL = egress.URL
 
 	// 准备请求头
@@ -188,7 +188,7 @@ func (e *Executor) ExecuteRequestViaWebsocket(
 	var err2 error
 	acquireStart := time.Now()
 	if prevRespID := strings.TrimSpace(gjson.GetBytes(wsBody, "previous_response_id").String()); prevRespID != "" {
-		if pwc, ppr, slotKey := e.acquireClientContinuation(websocketContinuation{responseID: prevRespID, accountID: account.ID(), apiKey: apiKey, identity: websocketClientIdentity(headers)}); pwc != nil {
+		if pwc, ppr, slotKey := e.acquireClientContinuation(websocketContinuation{responseID: prevRespID, accountID: account.ID(), apiKey: apiKey, identity: websocketClientIdentity(headers), route: proxyOverride}); pwc != nil {
 			wc, pr, poolSessionID = pwc, ppr, slotKey
 		}
 	}
@@ -452,12 +452,14 @@ func (e *Executor) sendRequest(wc *WsConnection, body []byte, requestID string) 
 
 // WsResponse WebSocket 响应包装器
 type WsResponse struct {
-	conn        *WsConnection
-	pendingReq  *PendingRequest
-	sessionID   string
-	manager     *Manager
-	readErrChan chan error
-	closed      bool
+	ipv6Attempt     *ipv6WSAttempt
+	ipv6Replacement *WsResponse
+	conn            *WsConnection
+	pendingReq      *PendingRequest
+	sessionID       string
+	manager         *Manager
+	readErrChan     chan error
+	closed          bool
 	// apiKey 发起本请求的下游 API Key，用于 response_id → 连接绑定的归属校验。
 	apiKey string
 	// connBroken 标记读流因上游 WS 异常(非正常关闭)或下游写入失败而终止；
@@ -473,7 +475,7 @@ type WsResponse struct {
 }
 
 // ReadStream 读取 SSE 流
-func (r *WsResponse) ReadStream(callback func(data []byte) bool) error {
+func (r *WsResponse) readStream(callback func(data []byte) bool) error {
 	if r.conn == nil {
 		return fmt.Errorf("websocket connection is not available")
 	}
@@ -665,6 +667,9 @@ func (r *WsResponse) Close() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	if r.ipv6Replacement != nil {
+		return r.ipv6Replacement.Close()
+	}
 	if r.closed {
 		return nil
 	}

@@ -1,3 +1,4 @@
+import type { IPv6EgressConfig, IPv6EgressData } from './lib/ipv6Egress'
 import type { CodexPathSnapshot } from "./types"
 import type { ModelQualityConfig, ModelQualityData } from './lib/modelQuality'
 import { readCodexProbeEvents, type CodexProbeBatch, type CodexProbeEvent, type CodexProbeLevel, type CodexProbeResult } from './lib/codexProbe.ts'
@@ -1580,6 +1581,8 @@ export const api = {
     request<{ job: QualityTestJob }>(`/accounts/${accountId}/quality-test`, { method: 'POST', body: JSON.stringify(body) }),
   getQualityTests: (page = 1, filter: QualityTestJobsFilter = {}, signal?: AbortSignal) =>
     request<QualityTestJobsResponse>(`/quality-tests?${qualityTestFilterQuery(page, filter)}`, { signal }),
+  getIPv6Egress: (signal?: AbortSignal) => request<IPv6EgressData>('/ipv6-egress', { signal }),
+  setIPv6Egress: (config: IPv6EgressConfig) => request<IPv6EgressData>('/ipv6-egress', { method: 'PUT', body: JSON.stringify(config) }),
   getModelQuality: (page: number, search: string, signal?: AbortSignal) =>
     request<ModelQualityData>(`/model-quality?page=${page}&search=${encodeURIComponent(search)}`, { signal }),
   setModelQuality: (config: ModelQualityConfig) =>

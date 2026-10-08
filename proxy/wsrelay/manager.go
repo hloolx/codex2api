@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/codex2api/auth"
+	"github.com/codex2api/egressipv6"
 	"github.com/codex2api/proxy"
 	"github.com/codex2api/security"
 	"github.com/gorilla/websocket"
@@ -52,7 +53,8 @@ type WsConnection struct {
 	URL string
 
 	// 连接池键
-	PoolKey string
+	PoolKey   string
+	ipv6Route string
 
 	// 连接状态
 	state atomic.Int32
@@ -1224,7 +1226,15 @@ func (m *Manager) createConnection(
 	// (传入的 wsURL 已是 Resin 反代地址);poolKey 仍按第 2 层代理分池,保持既有键不变。
 	proxyURL := effectiveProxyURL(account, proxyOverride)
 	dialProxy := proxy.CodexDialProxyURL(account, proxyURL)
-	if dialProxy != "" {
+	if proxy.IsIPv6Route(dialProxy) {
+		sourceDialer, err := egressipv6.NewDialer(proxy.IPv6RouteIP(dialProxy))
+		if err != nil {
+			return nil, err
+		}
+		dialer.Proxy = nil
+		dialer.NetDialContext = sourceDialer.DialContext
+		dialer.NetDialTLSContext = nil
+	} else if dialProxy != "" {
 		if err := configureWebsocketDialerProxy(dialer, dialProxy); err != nil {
 			return nil, err
 		}
@@ -1257,6 +1267,9 @@ func (m *Manager) createConnection(
 	wc := NewWsConnection(conn, session, wsURL)
 	wc.account = account
 	wc.PoolKey = poolKey
+	if proxy.IsIPv6Route(dialProxy) {
+		wc.ipv6Route = dialProxy
+	}
 	wc.upstreamUserAgent = strings.TrimSpace(headers.Get("User-Agent"))
 	wc.upstreamUserAgentKnown = true
 	wc.upstreamClientIdentity = websocketClientIdentity(headers)

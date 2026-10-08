@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/codex2api/auth"
+	"github.com/codex2api/egressipv6"
 )
 
 // ==================== Codex 出口链路统一解析 ====================
@@ -41,6 +42,8 @@ const (
 
 // CodexEgress 描述解析后的出口:最终请求地址、拨号用代理与客户端。
 type CodexEgress struct {
+	Err  error
+	IPv6 egressipv6.Route
 	Kind CodexEgressKind
 	// URL 是最终请求地址;Resin 模式下已改写为反代路径。
 	URL string
@@ -58,7 +61,7 @@ type CodexEgress struct {
 // account 为 nil 时不可能走 Resin(Resin 按账号粘性,无身份无从粘),退回代理/直连。
 func ResolveCodexEgress(account *auth.Account, targetURL, proxyURL string) CodexEgress {
 	if proxyURL == ipv6StateDirectRoute {
-		return CodexEgress{Kind: CodexEgressDirect, URL: targetURL, account: account}
+		return CodexEgress{Kind: CodexEgressDirect, URL: targetURL, account: account, client: getRawPooledClient(account, "")}
 	}
 	proxyURL = strings.TrimSpace(proxyURL)
 	if resinCarriesEgress(account) {
@@ -175,6 +178,9 @@ type CodexEgressSummary struct {
 // CurrentCodexEgressSummary 返回当前生效的 Codex 出口摘要。
 func CurrentCodexEgressSummary() CodexEgressSummary {
 	cfg := GetResinConfig()
+	if cfg == nil && egressipv6.Enabled() {
+		return CodexEgressSummary{Mode: "local_ipv6"}
+	}
 	if cfg == nil {
 		return CodexEgressSummary{Mode: "proxy_chain"}
 	}
@@ -206,9 +212,9 @@ func MaskResinBaseURL(raw string) string {
 }
 
 // ResolveCodexRequestEgress picks the websocket or HTTP egress for one request.
-func ResolveCodexRequestEgress(_ context.Context, account *auth.Account, targetURL, proxyURL string, websocket bool) CodexEgress {
+func ResolveCodexRequestEgress(ctx context.Context, account *auth.Account, targetURL, proxyURL string, websocket bool) CodexEgress {
 	if websocket {
-		return ResolveCodexWebsocketEgress(account, targetURL, proxyURL)
+		return resolveIPv6Websocket(ctx, account, ResolveCodexWebsocketEgress(account, targetURL, proxyURL))
 	}
 	return ResolveCodexEgress(account, targetURL, proxyURL)
 }

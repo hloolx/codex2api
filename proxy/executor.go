@@ -315,8 +315,12 @@ func logCodexFingerprintDebug(kind string, account *auth.Account, proxyURL strin
 	)
 }
 
-// getPooledClient 获取或创建连接池中的 HTTP Client（按账号隔离，TTL 自动淘汰）
+// getPooledClient preserves account isolation and applies dedicated IPv6 egress.
 func getPooledClient(account *auth.Account, proxyURL string) *http.Client {
+	return wrapIPv6Client(account, getRawPooledClient(account, proxyURL), true, false)
+}
+
+func getRawPooledClient(account *auth.Account, proxyURL string) *http.Client {
 	transportMode := codexTransportModeFromEnv()
 	key := clientPoolKey(account, proxyURL, transportMode)
 	if v, ok := clientPool.Load(key); ok {

@@ -189,3 +189,14 @@ func populateUpstreamTrace(c *gin.Context, input *database.UsageLogInput) {
 		input.UpstreamTurnState = current.upstreamTurnState
 	}
 }
+
+// RecordIPv6Source replaces the configured proxy label with the actual source.
+func RecordIPv6Source(ctx context.Context, accountID int64, ip string) {
+	if audit := upstreamTraceFromContext(ctx); audit != nil {
+		audit.mu.Lock()
+		defer audit.mu.Unlock()
+		if audit.current != nil && audit.current.accountID == accountID {
+			audit.current.proxy = auth.ProxyAuditLabel{Name: "IPv6 " + ip}
+		}
+	}
+}

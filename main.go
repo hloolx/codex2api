@@ -23,6 +23,7 @@ import (
 	"github.com/codex2api/cache"
 	"github.com/codex2api/config"
 	"github.com/codex2api/database"
+	"github.com/codex2api/egressipv6"
 	"github.com/codex2api/internal/imagestore"
 	"github.com/codex2api/internal/version"
 	"github.com/codex2api/proxy"
@@ -340,6 +341,15 @@ func main() {
 	claudeCLIVersionCancel()
 
 	// 5. 初始化账号管理器
+	ipv6Egress := egressipv6.New(db)
+	if err := ipv6Egress.Refresh(context.Background()); err != nil {
+		log.Printf("initialize IPv6 egress: %v", err)
+		return
+	}
+	ipv6Egress.ObserveSource = proxy.RecordIPv6Source
+	egressipv6.Install(ipv6Egress)
+	auth.CodexHTTPClientDecorator = proxy.WrapOAuthIPv6Client
+
 	store := auth.NewStore(db, tc, settings)
 	store.SetSchedulerWaitLimits(cfg.SchedulerMaxWaiters, cfg.SchedulerMaxWaitersPerKey)
 
@@ -369,6 +379,7 @@ func main() {
 		adminHandler.WaitModelQuality()
 	}()
 	adminHandler.StartQualityTests(backgroundCtx)
+	go ipv6Egress.Run(backgroundCtx)
 	if err := adminHandler.StartModelQuality(backgroundCtx); err != nil {
 		cancelBackground()
 		log.Printf("Model quality guard startup failed: %v", err)

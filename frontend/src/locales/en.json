@@ -7608,5 +7608,41 @@
       "codex": "Codex",
       "basispoints": "Basispoints"
     }
+  },
+  "ipv6Egress": {
+    "title": "Dedicated host IPv6 egress",
+    "description": "Assign one stable host IPv6 to each Codex account. On connection failures or rate limits, cool down the old address and retry a free one. Existing proxy settings resume when disabled.",
+    "enable": "Enable host IPv6 egress",
+    "loading": "Loading egress status…",
+    "on": "Enabled",
+    "off": "Disabled",
+    "counts": "Pool {{total}} · Available {{available}} · Cooling {{cooling}}",
+    "resin": "Resin currently controls egress. Disable Resin before enabling this feature.",
+    "noLocal": "No public IPv6 is visible inside the container. Check host addresses and container networking.",
+    "sources": "IPv6 address pool",
+    "sourcesPlaceholder": "Leave empty to use all local public IPv6 addresses",
+    "sourcesHint": "One existing host address per line. Addresses are never created automatically. An exhausted pool blocks egress until an address is available.",
+    "cooldown": "Address cooldown (seconds)",
+    "attempts": "Maximum attempts per request",
+    "retry5xx": "Also rotate on upstream 500 / 502 / 503 / 504",
+    "retryHint": "Connection failures and temporary 429s are included. Authentication, exhausted quota and invalid requests do not rotate. Output is never replayed after streaming starts. A 5xx is not proof of an IP problem or degraded intelligence.",
+    "save": "Save egress settings",
+    "saved": "Settings applied",
+    "bindings": "Account bindings ({{count}})",
+    "search": "Search account or IPv6",
+    "empty": "An independent IPv6 is assigned on the first request and will appear here.",
+    "noMatch": "No matching accounts or addresses.",
+    "waiting": "Address cooling; waiting for an available route",
+    "assigned": "Assigned",
+    "rotations": "{{count}} rotations",
+    "reason": {
+      "assigned": "Initial assignment",
+      "http_429": "Temporary rate limit",
+      "http_500": "Upstream 500",
+      "http_502": "Upstream 502",
+      "http_503": "Upstream 503",
+      "http_504": "Upstream 504",
+      "connect_failed": "Connection failed"
+    }
   }
 }
