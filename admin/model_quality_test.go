@@ -55,7 +55,7 @@ func TestModelQualityImportedAccountIsCheckedWithoutFallback(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	a := &auth.Account{DBID: id, AccessToken: "fixture", Status: auth.StatusReady, PlanType: "plus"}
+	a := &auth.Account{DBID: id, AccessToken: "fixture", Status: auth.StatusReady, PlanType: "plus", CredentialGeneration: 1}
 	store.AddAccount(a)
 	started := make(chan string, 2)
 	r := &modelQualityRunner{h: h, wake: make(chan struct{}, 1)}
@@ -109,7 +109,7 @@ func TestModelQualityConfigAPIKeepsOtherRestrictionsAndFencesOldProbe(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	a := &auth.Account{DBID: id, AccessToken: "fixture", Status: auth.StatusReady}
+	a := &auth.Account{DBID: id, AccessToken: "fixture", Status: auth.StatusReady, CredentialGeneration: 1}
 	store.AddAccount(a)
 	h := &Handler{db: db, store: store}
 	r := &modelQualityRunner{h: h, wake: make(chan struct{}, 1)}
@@ -119,7 +119,7 @@ func TestModelQualityConfigAPIKeepsOtherRestrictionsAndFencesOldProbe(t *testing
 		t.Fatal(err)
 	}
 	cfg.Revision++
-	if err = db.EnsureModelQualityState(ctx, id, 0, "gpt-test"); err != nil {
+	if err = db.EnsureModelQualityState(ctx, id, 1, "gpt-test"); err != nil {
 		t.Fatal(err)
 	}
 	if ok, err := db.ClaimModelQuality(ctx, id, "gpt-test", "owner", cfg.Revision, time.Now().Unix()); err != nil || !ok {
@@ -140,7 +140,7 @@ func TestModelQualityConfigAPIKeepsOtherRestrictionsAndFencesOldProbe(t *testing
 		}
 		return "fail", "late failure"
 	}
-	r.execute(ctx, a, "gpt-test", "owner", cfg.Revision, 0)
+	r.execute(ctx, a, "gpt-test", "owner", cfg.Revision, 1)
 	_, states, err := db.ModelQualitySnapshot(ctx, time.Now().Unix())
 	if err != nil || len(states) != 0 || a.IsModelQualityBlocked("gpt-test") {
 		t.Fatalf("late result resurrected a gate: %+v %v", states, err)

@@ -40,7 +40,8 @@ Renewable per-account database leases prevent concurrent probes across
 replicas. Configuration revisions, lease ownership/expiry and credential
 generation prevent obsolete results from restoring restrictions. Replicas
 refresh routing snapshots every five seconds; local administrator changes
-apply immediately. Replaced credentials start pending. Deleted accounts are
+apply immediately. Credential refresh queues a fresh check while retaining
+the last verdict; a refresh alone never clears red. Deleted accounts are
 removed by foreign-key cascade.
 
 Probe network requests have no hard response timeout; cancellation follows

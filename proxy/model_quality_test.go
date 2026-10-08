@@ -38,7 +38,7 @@ func TestModelQualityFiltersOnlySelectedAccountModel(t *testing.T) {
 	cfg.Models = []string{"gpt-a"}
 	a.CredentialGeneration = 8
 	s.ApplyModelQualitySnapshot(cfg, states)
-	if !accountFilterForModel("gpt-a")(a) {
-		t.Fatal("replacement credential inherited old verdict")
+	if accountFilterForModel("gpt-a")(a) {
+		t.Fatal("credential refresh cleared a red verdict without a passing check")
 	}
 }

@@ -134,7 +134,7 @@ func (db *DB) SaveModelQualityConfig(ctx context.Context, cfg ModelQualityConfig
 }
 
 func (db *DB) EnsureModelQualityState(ctx context.Context, id, generation int64, model string) error {
-	_, err := db.conn.ExecContext(ctx, `INSERT INTO model_quality_states(account_id,model,generation) VALUES($1,$2,$3) ON CONFLICT(account_id,model) DO UPDATE SET generation=$3,status='pending',last_outcome='',reason='',checked_at=0,next_check_at=0 WHERE model_quality_states.generation<>$3`, id, model, generation)
+	_, err := db.conn.ExecContext(ctx, `INSERT INTO model_quality_states(account_id,model,generation) SELECT $1,$2,$3 FROM accounts WHERE id=$1 AND credential_generation=$3 ON CONFLICT(account_id,model) DO UPDATE SET generation=$3,next_check_at=0 WHERE model_quality_states.generation<>$3`, id, model, generation)
 	return err
 }
 
@@ -143,7 +143,7 @@ func (db *DB) ClaimModelQuality(ctx context.Context, id int64, model, owner stri
 	if _, err := db.conn.ExecContext(ctx, `INSERT INTO model_quality_leases(account_id) VALUES($1) ON CONFLICT(account_id) DO NOTHING`, id); err != nil {
 		return false, err
 	}
-	result, err := db.conn.ExecContext(ctx, `UPDATE model_quality_leases SET owner=$1,model=$2,revision=$3,lease_until=$4 WHERE account_id=$5 AND lease_until<=$6 AND EXISTS(SELECT 1 FROM model_quality_config WHERE id=1 AND enabled=TRUE AND revision=$3) AND EXISTS(SELECT 1 FROM model_quality_states WHERE account_id=$5 AND model=$2 AND next_check_at<=$6)`, owner, model, revision, now+ModelQualityLeaseSeconds, id, now)
+	result, err := db.conn.ExecContext(ctx, `UPDATE model_quality_leases SET owner=$1,model=$2,revision=$3,lease_until=$4 WHERE account_id=$5 AND lease_until<=$6 AND EXISTS(SELECT 1 FROM model_quality_config WHERE id=1 AND enabled=TRUE AND revision=$3) AND EXISTS(SELECT 1 FROM model_quality_states s JOIN accounts a ON a.id=s.account_id WHERE s.account_id=$5 AND s.model=$2 AND s.next_check_at<=$6 AND s.generation=a.credential_generation)`, owner, model, revision, now+ModelQualityLeaseSeconds, id, now)
 	if err != nil {
 		return false, err
 	}
@@ -167,7 +167,7 @@ func (db *DB) ReleaseModelQuality(ctx context.Context, id int64, owner string) e
 
 // Inconclusive outcomes leave the last conclusive verdict unchanged.
 func (db *DB) FinishModelQuality(ctx context.Context, s ModelQualityState, owner string, revision, now int64) (bool, error) {
-	result, err := db.conn.ExecContext(ctx, `UPDATE model_quality_states SET status=CASE WHEN $1 IN ('pass','fail') THEN $1 ELSE status END,last_outcome=$1,reason=$2,checked_at=$3,next_check_at=$4 WHERE account_id=$5 AND model=$6 AND generation=$7 AND EXISTS(SELECT 1 FROM model_quality_config WHERE id=1 AND enabled=TRUE AND revision=$8) AND EXISTS(SELECT 1 FROM model_quality_leases WHERE account_id=$5 AND owner=$9 AND lease_until>$3 AND revision=$8 AND model=$6)`, s.LastOutcome, s.Reason, now, now+ModelQualityIntervalSeconds, s.AccountID, s.Model, s.Generation, revision, owner)
+	result, err := db.conn.ExecContext(ctx, `UPDATE model_quality_states SET status=CASE WHEN $1 IN ('pass','fail') THEN $1 ELSE status END,last_outcome=$1,reason=$2,checked_at=$3,next_check_at=$4 WHERE account_id=$5 AND model=$6 AND generation=$7 AND EXISTS(SELECT 1 FROM accounts WHERE id=$5 AND credential_generation=$7) AND EXISTS(SELECT 1 FROM model_quality_config WHERE id=1 AND enabled=TRUE AND revision=$8) AND EXISTS(SELECT 1 FROM model_quality_leases WHERE account_id=$5 AND owner=$9 AND lease_until>$3 AND revision=$8 AND model=$6)`, s.LastOutcome, s.Reason, now, now+ModelQualityIntervalSeconds, s.AccountID, s.Model, s.Generation, revision, owner)
 	if err != nil {
 		return false, err
 	}

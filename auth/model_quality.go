@@ -69,13 +69,13 @@ func (a *Account) IsModelQualityBlocked(model string) bool {
 		return false
 	}
 	a.mu.RLock()
-	gate, id, generation := a.modelQuality, a.DBID, a.CredentialGeneration
+	gate, id := a.modelQuality, a.DBID
 	a.mu.RUnlock()
 	if gate == nil {
 		return false
 	}
 	gate.mu.RLock()
-	blockedGeneration, blocked := gate.blocked[id][strings.ToLower(strings.TrimSpace(model))]
+	_, blocked := gate.blocked[id][strings.ToLower(strings.TrimSpace(model))]
 	gate.mu.RUnlock()
-	return blocked && blockedGeneration == generation
+	return blocked
 }

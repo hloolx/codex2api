@@ -326,7 +326,6 @@ func (h *Handler) GetModelQuality(c *gin.Context) {
 		}
 		a.Mu().RLock()
 		name := a.Email
-		generation := a.CredentialGeneration
 		a.Mu().RUnlock()
 		if name == "" {
 			name = fmt.Sprintf("ID %d", a.DBID)
@@ -341,7 +340,7 @@ func (h *Handler) GetModelQuality(c *gin.Context) {
 		view := modelQualityAccountView{ID: a.DBID, Name: name, Available: a.IsAvailable(), States: make([]database.ModelQualityState, 0)}
 		for _, m := range cfg.Models {
 			s, ok := byKey[qualityStateKey(a.DBID, m)]
-			if !ok || s.Generation != generation {
+			if !ok {
 				s = database.ModelQualityState{AccountID: a.DBID, Model: m, Status: "pending"}
 			}
 			if !a.SupportsCodexModel(m) {

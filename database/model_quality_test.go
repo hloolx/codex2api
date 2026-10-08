@@ -37,7 +37,7 @@ func TestPostgresModelQuality(t *testing.T) {
 	}
 	cfg.Revision++
 	for _, model := range cfg.Models {
-		if err = db.EnsureModelQualityState(ctx, id, 0, model); err != nil {
+		if err = db.EnsureModelQualityState(ctx, id, 1, model); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -65,7 +65,7 @@ func TestPostgresModelQuality(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("reclaim: %v %v", ok, err)
 	}
-	ok, err = db.FinishModelQuality(ctx, ModelQualityState{AccountID: id, Model: "model-a", LastOutcome: "fail"}, "final", cfg.Revision, 1121)
+	ok, err = db.FinishModelQuality(ctx, ModelQualityState{AccountID: id, Model: "model-a", Generation: 1, LastOutcome: "fail"}, "final", cfg.Revision, 1121)
 	if err != nil || !ok {
 		t.Fatalf("finish: %v %v", ok, err)
 	}
@@ -99,7 +99,7 @@ func newModelQualityDB(t *testing.T) *DB {
 			t.Error(err)
 		}
 	})
-	if _, err = db.conn.Exec(`INSERT INTO accounts(id,name,credentials,status) VALUES(1,'quality-test','{}','active'),(2,'quality-test-2','{}','active')`); err != nil {
+	if _, err = db.conn.Exec(`INSERT INTO accounts(id,name,credentials,status,credential_generation) VALUES(1,'quality-test','{}','active',7),(2,'quality-test-2','{}','active',7)`); err != nil {
 		t.Fatal(err)
 	}
 	return db
@@ -165,13 +165,26 @@ func TestModelQualityIndependentVerdictsErrorsAndRecovery(t *testing.T) {
 			t.Fatalf("recovery failed: %+v", s)
 		}
 	}
+	finish("a", "fail", 2803)
+	if ok, err := db.ClaimModelQuality(ctx, 1, "a", "before-refresh", cfg.Revision, 3404); err != nil || !ok {
+		t.Fatalf("claim before refresh: %v %v", ok, err)
+	}
+	if _, err = db.conn.Exec(`UPDATE accounts SET credential_generation=8 WHERE id=1`); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := db.FinishModelQuality(ctx, ModelQualityState{AccountID: 1, Model: "a", Generation: 7, LastOutcome: "pass"}, "before-refresh", cfg.Revision, 3405); err != nil || ok {
+		t.Fatalf("old credential result accepted: %v %v", ok, err)
+	}
 	if err = db.EnsureModelQualityState(ctx, 1, 8, "a"); err != nil {
+		t.Fatal(err)
+	}
+	if err = db.EnsureModelQualityState(ctx, 1, 7, "a"); err != nil {
 		t.Fatal(err)
 	}
 	_, states, _ = db.ModelQualitySnapshot(ctx, 2205)
 	for _, s := range states {
-		if s.Model == "a" && (s.Status != "pending" || s.NextCheckAt != 0) {
-			t.Fatalf("replacement credential inherited verdict: %+v", s)
+		if s.Model == "a" && (s.Status != "fail" || s.NextCheckAt != 0 || s.Generation != 8) {
+			t.Fatalf("credential refresh lost the last verdict or fence: %+v", s)
 		}
 	}
 }
@@ -185,7 +198,7 @@ func TestModelQualityLeaseAndConfigurationFences(t *testing.T) {
 	}
 	cfg.Revision++
 	for _, m := range cfg.Models {
-		if err := db.EnsureModelQualityState(ctx, 1, 0, m); err != nil {
+		if err := db.EnsureModelQualityState(ctx, 1, 7, m); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -202,7 +215,7 @@ func TestModelQualityLeaseAndConfigurationFences(t *testing.T) {
 	if ok, err := db.RenewModelQuality(ctx, 1, "old", cfg.Revision, 1121); err != nil || ok {
 		t.Fatalf("expired owner renewed: %v %v", ok, err)
 	}
-	s := ModelQualityState{AccountID: 1, Model: "a", LastOutcome: "fail"}
+	s := ModelQualityState{AccountID: 1, Model: "a", Generation: 7, LastOutcome: "fail"}
 	if ok, err := db.FinishModelQuality(ctx, s, "old", cfg.Revision, 1121); err != nil || ok {
 		t.Fatalf("expired owner wrote: %v %v", ok, err)
 	}
