@@ -25,6 +25,18 @@ func (s *Store) AcquireModelQualityProbe(a *Account) bool {
 	return s.tryAcquireAccount(a, limit, true)
 }
 
+// ModelQualityCapacity returns the same account capacity used by probe admission.
+func (s *Store) ModelQualityCapacity(a *Account) (occupied, limit int64) {
+	if a == nil {
+		return 0, 0
+	}
+	a.mu.Lock()
+	a.recomputeSchedulerLocked(s.maxConcurrency.Load())
+	limit = a.DynamicConcurrencyLimit
+	a.mu.Unlock()
+	return a.OccupiedRequests.Load(), limit
+}
+
 func (s *Store) ApplyModelQualitySnapshot(cfg database.ModelQualityConfig, states []database.ModelQualityState) {
 	blocked := make(map[int64]map[string]int64)
 	selected := make(map[string]bool)

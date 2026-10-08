@@ -55,3 +55,24 @@ probes on their next five-second lease check.
 Older binaries ignore these additive tables and cannot enforce quality gates.
 Disable automatic checks before rolling back and verify existing account and
 quota restrictions independently. No destructive database rollback is needed.
+
+## Waiting and recovery
+
+The benchmark verdict and the execution state are separate. A passed or pending
+verdict does not override account authorization, administrator disables, quota
+or model cooldowns. Each row explains account unavailability, model cooldown
+(reason and retry time), occupied account capacity, another model running on
+the same account, scheduled checks, or queued work. A cooldown retry timestamp
+is an eligibility time, not a promise that upstream access has recovered.
+
+Requesting a retest queues work even while an account or model is unavailable;
+it does not bypass those restrictions. Unselected models and a disabled guard
+cannot be queued. A completed successful manual connection/quality test clears
+only that exact account/model's older `model_not_supported` cooldown. Empty,
+incomplete, failed or automatic guard responses do not release it. Database
+and atomic shared-cache comparisons preserve newer failures, other models,
+quota cooldowns and benchmark verdicts. Merely changing a plan label or refreshing
+a credential is not proof of model access.
+
+Turning the guard off clears previous verdicts. Re-enabling starts fresh checks.
+Backend scheduling failures are logged and surfaced separately from verdicts.

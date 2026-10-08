@@ -61,11 +61,13 @@ func gradeModelQuality(output string, complete bool, probeError string) (string,
 }
 
 type modelQualityRunner struct {
-	h     *Handler
-	mu    sync.Mutex // serializes publishing snapshots with administrator changes
-	wg    sync.WaitGroup
-	wake  chan struct{}
-	probe func(context.Context, *auth.Account, string) (string, string)
+	h               *Handler
+	mu              sync.Mutex // serializes publishing snapshots with administrator changes
+	wg              sync.WaitGroup
+	wake            chan struct{}
+	probe           func(context.Context, *auth.Account, string) (string, string)
+	lastScanAt      int64
+	schedulingError bool
 }
 
 func (h *Handler) StartModelQuality(ctx context.Context) error {
@@ -122,6 +124,7 @@ func (r *modelQualityRunner) run(ctx context.Context) {
 			return
 		}
 		cfg, states, err := r.refresh(ctx)
+		schedulingError := err != nil
 		if err != nil && ctx.Err() == nil {
 			log.Printf("[model-quality] snapshot failed: %v", err)
 		}
@@ -151,6 +154,8 @@ func (r *modelQualityRunner) run(ctx context.Context) {
 					}
 					if !exists || state.Generation != generation {
 						if err := r.h.db.EnsureModelQualityState(ctx, a.DBID, generation, model); err != nil {
+							schedulingError = true
+							log.Printf("[model-quality] enqueue account=%d model=%s: %v", a.DBID, model, err)
 							continue
 						}
 					}
@@ -160,6 +165,10 @@ func (r *modelQualityRunner) run(ctx context.Context) {
 					}
 					owner := hex.EncodeToString(nonce[:])
 					claimed, err := r.h.db.ClaimModelQuality(ctx, a.DBID, model, owner, cfg.Revision, time.Now().Unix())
+					if err != nil {
+						schedulingError = true
+						log.Printf("[model-quality] claim account=%d model=%s: %v", a.DBID, model, err)
+					}
 					if err != nil || !claimed {
 						continue
 					}
@@ -181,6 +190,9 @@ func (r *modelQualityRunner) run(ctx context.Context) {
 				}
 			}
 		}
+		r.mu.Lock()
+		r.lastScanAt, r.schedulingError = time.Now().Unix(), schedulingError
+		r.mu.Unlock()
 		select {
 		case <-ctx.Done():
 			return
@@ -277,10 +289,10 @@ func (h *Handler) probeModelQuality(ctx context.Context, a *auth.Account, model 
 }
 
 type modelQualityAccountView struct {
-	ID        int64                        `json:"id"`
-	Name      string                       `json:"name"`
-	Available bool                         `json:"available"`
-	States    []database.ModelQualityState `json:"states"`
+	ID        int64                   `json:"id"`
+	Name      string                  `json:"name"`
+	Available bool                    `json:"available"`
+	States    []modelQualityStateView `json:"states"`
 }
 
 func (h *Handler) GetModelQuality(c *gin.Context) {
@@ -294,8 +306,12 @@ func (h *Handler) GetModelQuality(c *gin.Context) {
 		return
 	}
 	byKey := make(map[string]database.ModelQualityState, len(states))
+	accountRunning := make(map[int64]bool)
 	for _, s := range states {
 		byKey[qualityStateKey(s.AccountID, s.Model)] = s
+		if s.Running {
+			accountRunning[s.AccountID] = true
+		}
 	}
 	models := make(map[string]bool)
 	for _, m := range proxy.TextTestModelIDs(c.Request.Context(), h.db) {
@@ -337,16 +353,13 @@ func (h *Handler) GetModelQuality(c *gin.Context) {
 		if total <= (page-1)*30 || total > page*30 {
 			continue
 		}
-		view := modelQualityAccountView{ID: a.DBID, Name: name, Available: a.IsAvailable(), States: make([]database.ModelQualityState, 0)}
+		view := modelQualityAccountView{ID: a.DBID, Name: name, Available: a.IsAvailable(), States: make([]modelQualityStateView, 0)}
 		for _, m := range cfg.Models {
 			s, ok := byKey[qualityStateKey(a.DBID, m)]
 			if !ok {
 				s = database.ModelQualityState{AccountID: a.DBID, Model: m, Status: "pending"}
 			}
-			if !a.SupportsCodexModel(m) {
-				s.Status = "unsupported"
-			}
-			view.States = append(view.States, s)
+			view.States = append(view.States, h.modelQualityView(a, s, cfg.Enabled, accountRunning[a.DBID], time.Now()))
 		}
 		views = append(views, view)
 	}
@@ -355,7 +368,10 @@ func (h *Handler) GetModelQuality(c *gin.Context) {
 		options = append(options, m)
 	}
 	sort.Strings(options)
-	c.JSON(200, gin.H{"config": cfg, "models": options, "accounts": views, "total": total, "page": page, "page_size": 30, "interval_seconds": database.ModelQualityIntervalSeconds})
+	h.modelQuality.mu.Lock()
+	lastScanAt, schedulingError := h.modelQuality.lastScanAt, h.modelQuality.schedulingError
+	h.modelQuality.mu.Unlock()
+	c.JSON(200, gin.H{"config": cfg, "models": options, "accounts": views, "total": total, "page": page, "page_size": 30, "interval_seconds": database.ModelQualityIntervalSeconds, "last_scan_at": lastScanAt, "scheduling_error": schedulingError})
 }
 
 func (h *Handler) UpdateModelQuality(c *gin.Context) {
@@ -436,10 +452,6 @@ func (h *Handler) RetestModelQuality(c *gin.Context) {
 		c.JSON(400, gin.H{"error": "请开启检测并选择该账号支持的模型"})
 		return
 	}
-	if !a.IsAvailable() || a.IsModelRateLimited(req.Model) {
-		c.JSON(409, gin.H{"error": "账号或模型暂不可用，恢复后自动检测"})
-		return
-	}
 	if err = h.db.EnsureModelQualityState(c.Request.Context(), a.DBID, qualityAccountGeneration(a), req.Model); err == nil {
 		err = h.db.RetestModelQuality(c.Request.Context(), a.DBID, req.Model)
 	}
@@ -451,5 +463,5 @@ func (h *Handler) RetestModelQuality(c *gin.Context) {
 	case h.modelQuality.wake <- struct{}{}:
 	default:
 	}
-	c.JSON(202, gin.H{"message": "已加入复测队列"})
+	c.JSON(202, gin.H{"message": "已加入复测队列，账号、模型和并发可用后开始"})
 }

@@ -27,6 +27,7 @@ func TestPostgresModelQuality(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg, _, err := db.ModelQualitySnapshot(ctx, 1000)
+	testModelSupportRecovery(t, db, id)
 	if err != nil {
 		t.Fatal(err)
 	}

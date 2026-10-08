@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import { Link } from 'react-router-dom'
 import { CheckCircle2, Circle, CircleAlert, RefreshCw, X, XCircle } from 'lucide-react'
 import { api } from '../api'
 import { Button } from '../components/ui/button'
@@ -9,7 +10,7 @@ import { Switch } from '../components/ui/switch'
 import Pagination from '../components/Pagination'
 import { useToast } from '../hooks/useToast'
 import { getErrorMessage } from '../utils/error'
-import type { ModelQualityConfig, ModelQualityData } from '../lib/modelQuality'
+import type { ModelQualityConfig, ModelQualityData, ModelQualityState } from '../lib/modelQuality'
 import './model-quality.css'
 
 export default function ModelQualityGuard() {
@@ -75,8 +76,20 @@ export default function ModelQualityGuard() {
 
   const config = data?.config
   const time = (seconds: number) => seconds ? new Date(seconds * 1000).toLocaleString() : t('modelQuality.notYet')
+  const executionText = (state: ModelQualityState) => {
+    if (!config?.enabled) return t('modelQuality.offRow')
+    if (state.execution === 'model_cooldown') return t(`modelQuality.cooldown_${state.cooldown_reason}`, { defaultValue: t('modelQuality.cooldown_generic') })
+    if (state.execution === 'account_unavailable') return t(`modelQuality.account_${state.account_status}`, { defaultValue: t('modelQuality.waitingAccount') })
+    if (state.execution === 'scheduled') return t('modelQuality.nextCheck', { time: time(state.next_check_at) })
+    if (state.execution === 'waiting_capacity') return t('modelQuality.waitingCapacity', { occupied: state.occupied, capacity: state.capacity })
+    if (state.execution === 'waiting_account') return t('modelQuality.waitingModel')
+    if (state.execution === 'unsupported' || state.status === 'unsupported') return t('modelQuality.unsupportedHint')
+    if (state.running) return t('modelQuality.running')
+    return t('modelQuality.waitingQueue')
+  }
   return <div className="model-quality" aria-busy={loading || saving}>
     {error || saveError ? <div role="alert" className="quality-test-error">{saveError || error}<Button size="sm" variant="outline" onClick={() => { setSaveError(''); reload() }}>{t('common.retry')}</Button></div> : null}
+    {config?.enabled && data?.scheduling_error ? <p role="alert" className="quality-test-error">{t('modelQuality.schedulerError')}</p> : null}
     <section className="model-quality-settings" aria-labelledby="model-quality-title">
       <div className="model-quality-toggle">
         <div><h2 id="model-quality-title">{t('modelQuality.title')}</h2><p id="model-quality-description">{t('modelQuality.description')}</p></div>
@@ -96,16 +109,16 @@ export default function ModelQualityGuard() {
       <div className="model-quality-toolbar"><h2 id="quality-accounts-title">{t('modelQuality.accounts')}</h2><div><Input value={search} onChange={event => setSearch(event.target.value)} placeholder={t('modelQuality.search')} aria-label={t('modelQuality.search')} /><Button size="sm" variant="outline" onClick={reload} disabled={loading}><RefreshCw className={loading ? 'size-4 animate-spin' : 'size-4'} />{t('common.refresh')}</Button></div></div>
       <div className="model-quality-legend"><span className="model-quality-pass"><CheckCircle2 />{t('modelQuality.pass')}</span><span className="model-quality-fail"><XCircle />{t('modelQuality.fail')}</span><span><Circle />{t('modelQuality.pending')}</span></div>
       {!data ? <p role="status" className="model-quality-empty">{t(error ? 'modelQuality.loadFailed' : 'common.loading')}</p> : data.accounts.length === 0 ? <p className="model-quality-empty">{t(query ? 'modelQuality.noMatch' : 'modelQuality.empty')}</p> : <div className="model-quality-account-list">{data.accounts.map(account => <article key={account.id} className="model-quality-account">
-        <div className="model-quality-account-name"><strong>{account.name}</strong><span>#{account.id}{!account.available ? ` · ${t('modelQuality.unavailable')}` : ''}</span></div>
+        <div className="model-quality-account-name"><strong>{account.name}</strong><span>#{account.id}{!account.available ? ` · ${t('modelQuality.unavailable')}` : ''}</span><Button size="sm" variant="link" asChild><Link to="/admin/accounts">{t('modelQuality.manageAccount')}</Link></Button></div>
         {account.states.length === 0 ? <p>{t('modelQuality.noSelected')}</p> : <div className="model-quality-verdicts">{account.states.map(state => {
           const active = Boolean(config?.enabled)
           const status = active ? state.status : 'pending'
           const Icon = status === 'pass' ? CheckCircle2 : status === 'fail' ? XCircle : Circle
           return <div key={state.model} className="model-quality-verdict">
             <div className="model-quality-verdict-heading"><strong>{state.model}</strong><span className={`model-quality-${status}`}><Icon />{t(active ? `modelQuality.${status}` : 'modelQuality.notMonitoring')}</span></div>
-            <div className="model-quality-verdict-detail"><span>{t('modelQuality.lastCheck', { time: time(state.checked_at) })}</span><span>{state.running ? t('modelQuality.running') : !active ? t('modelQuality.offRow') : state.status === 'unsupported' ? t('modelQuality.unsupportedHint') : !account.available ? t('modelQuality.waitingAccount') : t('modelQuality.nextCheck', { time: state.next_check_at ? time(state.next_check_at) : t('modelQuality.soon') })}</span></div>
+            <div className="model-quality-verdict-detail"><span>{t('modelQuality.lastCheck', { time: time(state.checked_at) })}</span><span className="model-quality-execution">{executionText(state)}</span>{active && !state.running && (state.execution === 'model_cooldown' || state.execution === 'account_unavailable') && !!state.resume_at ? <span>{t('modelQuality.resumeAt', { time: time(state.resume_at) })}</span> : null}</div>
             {state.reason && active ? <p className={state.last_outcome === 'error' ? 'model-quality-inconclusive' : ''}>{state.last_outcome === 'error' ? <CircleAlert className="size-3.5" /> : null}{state.reason}</p> : null}
-            <Button size="sm" variant="outline" disabled={!active || state.running || !account.available || state.status === 'unsupported' || retesting !== ''} onClick={() => void retest(account.id, state.model)}><RefreshCw className={state.running || retesting === `${account.id}:${state.model}` ? 'size-3.5 animate-spin' : 'size-3.5'} />{t('modelQuality.retest')}</Button>
+            <Button size="sm" variant="outline" disabled={!active || state.running || state.can_retest === false || state.status === 'unsupported' || retesting !== '' || saving} onClick={() => void retest(account.id, state.model)}><RefreshCw className={state.running || retesting === `${account.id}:${state.model}` ? 'size-3.5 animate-spin' : 'size-3.5'} />{t('modelQuality.retest')}</Button>
           </div>
         })}</div>}
       </article>)}</div>}
