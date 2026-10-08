@@ -39,7 +39,7 @@ func TestReviewDuplicateClaudeRefreshDoesNotConsumeCredential(t *testing.T) {
 	}
 }
 
-func TestReviewAstraLongOnlyOverridePreservesExistingPricing(t *testing.T) {
+func TestReviewAstraLongOnlyOverrideAppliesPricing(t *testing.T) {
 	db := newTestAdminDB(t)
 	t.Cleanup(func() { database.SetModelPricingOverrides(nil) })
 	_, err := db.MutateModelPricingSettings(context.Background(), nil, func(m map[string]database.ModelPricingOverride) error {
@@ -54,7 +54,7 @@ func TestReviewAstraLongOnlyOverridePreservesExistingPricing(t *testing.T) {
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest(http.MethodPost, "/api/admin/model-pricing", strings.NewReader(`{"model":"gpt-6-astra","pricing":{"input_long":20,"output_long":75}}`))
 	h.UpdateModelPricing(c)
-	if w.Code != http.StatusBadRequest {
+	if w.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", w.Code, w.Body)
 	}
 	settings, err := db.GetSystemSettings(context.Background())
@@ -62,8 +62,9 @@ func TestReviewAstraLongOnlyOverridePreservesExistingPricing(t *testing.T) {
 		t.Fatal(err)
 	}
 	overrides, err := database.ParseModelPricingOverridesJSON(settings.ModelPricingOverrides)
-	if err != nil || overrides["gpt-6-astra"].Input != 7 {
-		t.Fatal("rejected pricing request erased an existing override")
+	got := overrides["gpt-6-astra"]
+	if err != nil || got.InputLong != 20 || got.OutputLong != 75 {
+		t.Fatalf("pricing request did not apply long override: %+v", got)
 	}
 }
 

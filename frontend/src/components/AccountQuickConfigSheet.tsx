@@ -180,6 +180,7 @@ export default function AccountQuickConfigSheet({
     { value: "off", label: t("accounts.codexFingerprintModeOff") },
     { value: "device", label: t("accounts.codexFingerprintModeDevice") },
     { value: "session", label: t("accounts.codexFingerprintModeSession") },
+    { value: "single_machine_multi_window", label: t("accounts.codexFingerprintModeSessionIdentity") },
     { value: "full", label: t("accounts.codexFingerprintModeFull") },
   ];
 
@@ -187,6 +188,7 @@ export default function AccountQuickConfigSheet({
     off: t("accounts.codexFingerprintModeOffDetail"),
     device: t("accounts.codexFingerprintModeDeviceDetail"),
     session: t("accounts.codexFingerprintModeSessionDetail"),
+    single_machine_multi_window: t("accounts.codexFingerprintModeSessionIdentityDetail"),
     full: t("accounts.codexFingerprintModeFullDetail"),
   };
 
@@ -419,6 +421,23 @@ export default function AccountQuickConfigSheet({
               <Switch
                 checked={form.skipWarmTier}
                 onCheckedChange={(checked) => patchForm({ skipWarmTier: checked })}
+              />
+            </div>
+
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <div className="text-xs font-semibold text-foreground">
+                  {t("accounts.schedulerKeepConcurrencyLabel")}
+                </div>
+                <div className="text-[11px] text-muted-foreground">
+                  {t("accounts.schedulerKeepConcurrencyHint")}
+                </div>
+              </div>
+              <Switch
+                checked={form.keepConcurrencyOnDegrade}
+                onCheckedChange={(checked) =>
+                  patchForm({ keepConcurrencyOnDegrade: checked })
+                }
               />
             </div>
 

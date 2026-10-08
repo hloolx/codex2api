@@ -1173,6 +1173,11 @@ func multipartFileToDataURL(fileHeader *multipart.FileHeader) (string, error) {
 }
 
 func (h *Handler) ImagesGenerations(c *gin.Context) {
+	releaseImage, admitted := admitDirectImageExecution(c)
+	if !admitted {
+		return
+	}
+	defer releaseImage()
 	rawBody, err := readRawRequestBody(c)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"message": "Invalid request: " + err.Error(), "type": "invalid_request_error"}})
@@ -1252,6 +1257,11 @@ func (h *Handler) ImagesGenerations(c *gin.Context) {
 }
 
 func (h *Handler) ImagesEdits(c *gin.Context) {
+	releaseImage, admitted := admitDirectImageExecution(c)
+	if !admitted {
+		return
+	}
+	defer releaseImage()
 	contentType := strings.ToLower(strings.TrimSpace(c.GetHeader("Content-Type")))
 	if strings.HasPrefix(contentType, "application/json") {
 		h.imagesEditsFromJSON(c)
@@ -1569,13 +1579,17 @@ func imagePreferredAccountFilter(account *auth.Account) bool {
 // 无指纹分流同样要覆盖两层：否则生图流量既能落到分流组账号上，无指纹的生图请求
 // 又不会被关进分流组，两个方向都跟配置意图相反。
 func (h *Handler) nextImageAccount(c *gin.Context, apiKeyID int64, exclude map[int64]bool, model string, identity requestSessionIdentity) (*auth.Account, string) {
-	preferredFilter := applyAffinityGroupRouting(c, identity, h.withModelCooldownFilter(model, imagePreferredAccountFilter))
+	ctx := context.Background()
+	if c != nil && c.Request != nil {
+		ctx = c.Request.Context()
+	}
+	preferredFilter := applyAffinityGroupRouting(c, identity, h.withModelCooldownFilter(ctx, model, imagePreferredAccountFilter))
 	preferredFilter = h.applyScopeBudgetFilter(c, preferredFilter)
 	account, stickyProxyURL := h.nextAccountForSessionWithFilter("", apiKeyID, exclude, preferredFilter)
 	if account != nil {
 		return account, stickyProxyURL
 	}
-	fallbackFilter := applyAffinityGroupRouting(c, identity, h.withModelCooldownFilter(model, imageCapableAccountFilter))
+	fallbackFilter := applyAffinityGroupRouting(c, identity, h.withModelCooldownFilter(ctx, model, imageCapableAccountFilter))
 	return h.nextAccountForSessionWithFilter("", apiKeyID, exclude, h.applyScopeBudgetFilter(c, fallbackFilter))
 }
 
@@ -1623,6 +1637,19 @@ func (h *Handler) forwardImagesRequest(c *gin.Context, inboundEndpoint, requestM
 	}
 	upscalePlan := imageUpscalePlanForRequest(requestModel, responsesBody)
 
+	var replay *os.File
+	if pipeline := pipelineFromContext(c.Request.Context()); pipeline != nil {
+		var err error
+		replay, err = pipeline.spool(responsesBody)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"message": "cannot spool image request"}})
+			return
+		}
+		defer removePipelineFile(replay)
+		responsesBody = pipelineRetryMetadata(responsesBody)
+		compactPipelineIngress(c)
+	}
+
 	for attempt := 0; ; attempt++ {
 		if attempt >= maxImageAttempts && !continuousRetryActive {
 			break
@@ -1638,7 +1665,7 @@ func (h *Handler) forwardImagesRequest(c *gin.Context, inboundEndpoint, requestM
 		if sameAccountRetryID > 0 {
 			preferredID := sameAccountRetryID
 			sameAccountRetryID = 0
-			preferredFilter := applyAffinityGroupRouting(c, sessionIdentity, h.withModelCooldownFilter(requestModel, imageCapableAccountFilter))
+			preferredFilter := applyAffinityGroupRouting(c, sessionIdentity, h.withModelCooldownFilter(c.Request.Context(), requestModel, imageCapableAccountFilter))
 			preferredFilter = h.applyScopeBudgetFilter(c, preferredFilter)
 			account = h.store.TakePreferredAccountWithDispatch(preferredID, apiKeyID, nil, preferredFilter, dispatchPolicyForModel(requestModel))
 			if account != nil {
@@ -1661,9 +1688,10 @@ func (h *Handler) forwardImagesRequest(c *gin.Context, inboundEndpoint, requestM
 			if continuousRetryCommitExpired(c, continuousRetryProtocolResponses) {
 				return
 			}
-			waitFilter := applyAffinityGroupRouting(c, sessionIdentity, h.withModelCooldownFilter(requestModel, imageCapableAccountFilter))
+			waitFilter := applyAffinityGroupRouting(c, sessionIdentity, h.withModelCooldownFilter(c.Request.Context(), requestModel, imageCapableAccountFilter))
+			selectionFilter := h.applyScopeBudgetFilter(c, waitFilter)
 			var selectionErr error
-			account, stickyProxyURL, selectionErr = h.waitForRetryAccountAvailable(c.Request.Context(), "", apiKeyID, retryExclusions.ForSelection(), h.applyScopeBudgetFilter(c, waitFilter), false, dispatchPolicyForModel(requestModel))
+			account, stickyProxyURL, selectionErr = h.waitForRetryAccountAvailable(c.Request.Context(), "", apiKeyID, retryExclusions.ForSelection(), selectionFilter, false, dispatchPolicyForModel(requestModel))
 			if writeSchedulerQueueError(c, selectionErr, continuousRetryProtocolResponses) {
 				return
 			}
@@ -1692,6 +1720,14 @@ func (h *Handler) forwardImagesRequest(c *gin.Context, inboundEndpoint, requestM
 					SendAPIKeyLimitError(c, http.StatusTooManyRequests, msg)
 					return
 				}
+				if h.accountPoolConcurrencySaturated(apiKeyID, retryExclusions.ForSelection(), selectionFilter, dispatchPolicyForModel(requestModel)) {
+					setConcurrencySaturatedRetryAfter(c)
+					if stream && writeCommittedResponsesRetryError(c, concurrencySaturatedMessageZH) {
+						return
+					}
+					c.JSON(http.StatusServiceUnavailable, concurrencySaturatedError())
+					return
+				}
 				if stream && writeCommittedResponsesRetryError(c, noAvailableAccountMessage("")) {
 					return
 				}
@@ -1710,6 +1746,11 @@ func (h *Handler) forwardImagesRequest(c *gin.Context, inboundEndpoint, requestM
 		}
 
 		resp, reqErr := executeHTTPWithContinuousRetryKeepalive(c.Request.Context(), func() (*http.Response, error) {
+			if replay != nil {
+				return executePipelineImage(c.Request.Context(), replay, gjson.GetBytes(responsesBody, "model").String(), func(body []byte) (*http.Response, error) {
+					return ExecuteRequest(c.Request.Context(), account, body, "", proxyURL, apiKey, deviceCfg, c.Request.Header.Clone(), false)
+				})
+			}
 			return ExecuteRequest(c.Request.Context(), account, responsesBody, "", proxyURL, apiKey, deviceCfg, c.Request.Header.Clone(), false)
 		})
 		durationMs := int(time.Since(start).Milliseconds())
@@ -1748,6 +1789,17 @@ func (h *Handler) forwardImagesRequest(c *gin.Context, inboundEndpoint, requestM
 			}
 			ErrorToGinResponse(c, reqErr)
 			return
+		}
+
+		if pipeline := pipelineFromContext(c.Request.Context()); pipeline != nil {
+			file, err := pipeline.collectResponse(c.Request.Context(), resp.Body)
+			if err != nil {
+				h.store.Release(account)
+				c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"message": "image response spool failed; upstream result may be unknown: " + err.Error()}})
+				return
+			}
+			defer removePipelineFile(file)
+			resp.Body = &pipelineResponseReader{File: file, err: pipeline.responseReadError}
 		}
 
 		if resp.StatusCode != http.StatusOK {
@@ -2090,6 +2142,16 @@ func (h *Handler) forwardImagesRequest(c *gin.Context, inboundEndpoint, requestM
 		h.sendFinalUpstreamError(c, lastStatusCode, lastBody)
 		return
 	}
+	imageFilter := applyAffinityGroupRouting(c, sessionIdentity, h.withModelCooldownFilter(c.Request.Context(), requestModel, imageCapableAccountFilter))
+	imageFilter = h.applyScopeBudgetFilter(c, imageFilter)
+	if h.accountPoolConcurrencySaturated(apiKeyID, retryExclusions.ForSelection(), imageFilter, dispatchPolicyForModel(requestModel)) {
+		setConcurrencySaturatedRetryAfter(c)
+		if stream && writeCommittedResponsesRetryError(c, concurrencySaturatedMessageZH) {
+			return
+		}
+		c.JSON(http.StatusServiceUnavailable, concurrencySaturatedError())
+		return
+	}
 	if stream && writeCommittedResponsesRetryError(c, noAvailableAccountMessage("")) {
 		return
 	}
@@ -2138,6 +2200,9 @@ func buildImageErrorUsageLog(account *auth.Account, inboundEndpoint, logModel, l
 // catch-all. Explicitly selected failures bypass the ordinary image-attempt
 // cap; unselected legacy retry budgets keep honoring it.
 func shouldRetryImageStreamError(err error, generalRetries *int, maxGeneralRetries int, attempt int, maxAttempts int, policies ...database.ContinuousRetryPolicy) bool {
+	if isPipelineOutputError(err) {
+		return false
+	}
 	if err == nil || generalRetries == nil {
 		return false
 	}
@@ -2320,6 +2385,9 @@ func applyImageUpscalePlan(ctx context.Context, plan imageUpscalePlan, results [
 
 // applyImageUpscalePlanWithKeepalive 在图片超分期间保持下游连接有协议流量。
 func applyImageUpscalePlanWithKeepalive(ctx context.Context, plan imageUpscalePlan, results []imageCallResult) ([]imageCallResult, error) {
+	if p := pipelineFromContext(ctx); p != nil && p.Output != nil {
+		return results, nil
+	}
 	if !plan.enabled() {
 		return results, nil
 	}
@@ -2705,13 +2773,13 @@ func collectImagesResponse(ctx context.Context, body io.Reader, responseFormat, 
 		}
 		switch normalizedUpstreamSSEEventType(event, data) {
 		case "response.output_item.done":
-			if image, ok := extractImageFromOutputItemDone(data, fallbackModel); ok {
+			if image, ok := extractImageFromOutputItemDone(data, fallbackModel, pipelineFromContext(ctx) != nil); ok {
 				mergeImageMeta(&image, firstMeta)
 				pendingResults = append(pendingResults, image)
 			}
 		case "response.completed":
 			gotTerminal = true
-			results, completedAt, usageRaw, completedMeta, completedUsage, err := extractImagesFromResponsesCompleted(data, fallbackModel)
+			results, completedAt, usageRaw, completedMeta, completedUsage, err := extractImagesFromResponsesCompleted(data, fallbackModel, pipelineFromContext(ctx) != nil)
 			if err != nil {
 				readErr = err
 				return false
@@ -3237,7 +3305,7 @@ func firstNonEmptyImageErrorField(values ...string) string {
 	return ""
 }
 
-func extractImagesFromResponsesCompleted(payload []byte, fallbackModel string) ([]imageCallResult, int64, []byte, imageCallResult, *UsageInfo, error) {
+func extractImagesFromResponsesCompleted(payload []byte, fallbackModel string, skipStats ...bool) ([]imageCallResult, int64, []byte, imageCallResult, *UsageInfo, error) {
 	if gjson.GetBytes(payload, "type").String() != "response.completed" {
 		return nil, 0, nil, imageCallResult{}, nil, fmt.Errorf("unexpected event type")
 	}
@@ -3273,7 +3341,9 @@ func extractImagesFromResponsesCompleted(payload []byte, fallbackModel string) (
 				Quality:       strings.TrimSpace(item.Get("quality").String()),
 				Model:         fallbackModel,
 			}
-			populateImageStats(&image)
+			if len(skipStats) == 0 || !skipStats[0] {
+				populateImageStats(&image)
+			}
 			mergeImageMeta(&image, firstMeta)
 			if len(results) == 0 {
 				firstMeta = image
@@ -3299,7 +3369,7 @@ func hasTokenUsage(usage *UsageInfo) bool {
 	return usage != nil && (usage.InputTokens > 0 || usage.OutputTokens > 0 || usage.TotalTokens > 0)
 }
 
-func extractImageFromOutputItemDone(payload []byte, fallbackModel string) (imageCallResult, bool) {
+func extractImageFromOutputItemDone(payload []byte, fallbackModel string, skipStats ...bool) (imageCallResult, bool) {
 	if gjson.GetBytes(payload, "type").String() != "response.output_item.done" {
 		return imageCallResult{}, false
 	}
@@ -3323,7 +3393,9 @@ func extractImageFromOutputItemDone(payload []byte, fallbackModel string) (image
 		Quality:       strings.TrimSpace(item.Get("quality").String()),
 		Model:         fallbackModel,
 	}
-	populateImageStats(&image)
+	if len(skipStats) == 0 || !skipStats[0] {
+		populateImageStats(&image)
+	}
 	return image, true
 }
 
@@ -3377,6 +3449,9 @@ func mergeImageMeta(target *imageCallResult, source imageCallResult) {
 type imageURLBuilder func(ctx context.Context, image imageCallResult, idx int) (string, bool)
 
 func buildImagesAPIResponse(ctx context.Context, results []imageCallResult, createdAt int64, usageRaw []byte, firstMeta imageCallResult, responseFormat string, urlFor imageURLBuilder) ([]byte, error) {
+	if p := pipelineFromContext(ctx); p != nil && p.Output != nil {
+		return p.saveResults(ctx, results)
+	}
 	if createdAt <= 0 {
 		createdAt = time.Now().Unix()
 	}

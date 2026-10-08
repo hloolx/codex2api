@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 
@@ -116,5 +117,44 @@ func TestAntigravityFoldLogicalModelHonoursRedirect(t *testing.T) {
 	}
 	if _, mapped, _ = antigravityFoldLogicalModel([]byte(`{"model":"gemini-3.8-flash-low"}`), "gemini-3.8-flash-low"); mapped != "gemini-3.8-flash-low" {
 		t.Fatalf("fixed tier fold changed model: %q", mapped)
+	}
+}
+
+func TestAntigravityFoldBareLogicalModelUsesModelDefaultTier(t *testing.T) {
+	for model, want := range map[string]string{
+		"gemini-3.6-flash":  "gemini-3.6-flash-medium",
+		"gemini-3.8-flash":  "gemini-3.8-flash-low",
+		"gemini-3.1-pro":    "gemini-3.1-pro-high",
+		"claude-opus-5-5":   "claude-opus-5-5-high",
+		"claude-sonnet-5-5": "claude-sonnet-5-5-high",
+	} {
+		body := []byte(`{"model":"` + model + `","input":"hi"}`)
+		if _, mapped, apiErr := antigravityFoldLogicalModel(body, model); apiErr != nil || mapped != want {
+			t.Fatalf("bare %s folded to %q (err=%v), want %s", model, mapped, apiErr, want)
+		}
+	}
+	effort := []byte(`{"model":"claude-opus-5-5","reasoning":{"effort":"low"},"input":"hi"}`)
+	if _, mapped, apiErr := antigravityFoldLogicalModel(effort, "claude-opus-5-5"); apiErr != nil || mapped != "claude-opus-5-5-low" {
+		t.Fatalf("explicit effort fold = %q err=%v", mapped, apiErr)
+	}
+}
+
+func TestAntigravityRedirectChoicesIncludeClaude55(t *testing.T) {
+	found := map[string]AntigravityRedirectChoice{}
+	for _, choice := range AntigravityRedirectChoices() {
+		found[choice.Model] = choice
+	}
+	for _, family := range []string{"claude-opus-5-5", "claude-sonnet-5-5"} {
+		choice, ok := found[family]
+		want := []string{family + "-low", family + "-medium", family + "-high"}
+		if !ok || choice.DefaultLevel != "high" || !reflect.DeepEqual(choice.Tiers, want) {
+			t.Fatalf("%s redirect choice = %+v", family, choice)
+		}
+	}
+	if err := ValidateAntigravityModelRedirects(map[string]string{"claude-opus-5-5": "claude-opus-5-5-medium"}); err != nil {
+		t.Fatalf("valid Claude redirect rejected: %v", err)
+	}
+	if err := ValidateAntigravityModelRedirects(map[string]string{"claude-opus-5-5": "claude-sonnet-5-5-high"}); err == nil {
+		t.Fatal("cross-family Claude redirect accepted")
 	}
 }

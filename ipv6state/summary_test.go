@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"slices"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -32,11 +31,11 @@ func TestSummarySelectedScopeIdentityExpiryAndBusySlots(t *testing.T) {
 			t.Fatal("per-model count missing")
 		}
 	}
-	atomic.StoreInt64(&account.ActiveRequests, 20)
+	account.ActiveRequests.Store(20)
 	if snapshot := m.Snapshot(); snapshot.Summary.Revision != first.Summary.Revision || snapshot.Summary.AvailableAccounts != 1 {
 		t.Fatal("busy slots changed coverage")
 	}
-	atomic.StoreInt64(&account.ActiveRequests, 0)
+	account.ActiveRequests.Store(0)
 	account.SetCooldownUntil(now.Add(time.Minute), "rate_limited")
 	if summary := m.Snapshot().Summary; summary.ReuseAccounts != 1 || summary.ValidCombinations != 2 || summary.AvailableAccounts != 0 {
 		t.Fatal("cooldown conflated with validity")

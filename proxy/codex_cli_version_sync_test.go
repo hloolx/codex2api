@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/codex2api/auth"
 )
 
 func TestExtractCodexCLIVersion(t *testing.T) {
@@ -153,4 +155,10 @@ func TestUpdateRuntimeSettingsSerializesConcurrentFieldPatches(t *testing.T) {
 	if got.ClientCompatMode != ClientCompatModeForce || got.CodexSyncedCLIVersion != "9.9.9" {
 		t.Fatalf("runtime settings = compat:%q synced:%q, want force / 9.9.9", got.ClientCompatMode, got.CodexSyncedCLIVersion)
 	}
+}
+
+// generatedCodexClientHeaders 是测试辅助：忽略版本不可用错误，只断言生成结果。
+func generatedCodexClientHeaders(account *auth.Account, settings RuntimeSettings) (string, string) {
+	ua, version, _ := generatedCodexClientHeadersChecked(account, settings)
+	return ua, version
 }

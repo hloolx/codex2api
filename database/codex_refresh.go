@@ -309,5 +309,5 @@ func (db *DB) writeCodexRefreshCredentials(ctx context.Context, tx *sql.Tx, row 
 	if n != 1 {
 		return fmt.Errorf("%w: account %d", ErrCodexCredentialsChanged, row.ID)
 	}
-	return nil
+	return invalidateDaybreakIdentity(ctx, tx, row.ID)
 }

@@ -9,10 +9,10 @@ func TestExpiryUrgencyBonus(t *testing.T) {
 	now := time.Date(2026, 5, 27, 12, 0, 0, 0, time.UTC)
 
 	cases := []struct {
-		name       string
-		plan       string
-		expiresAt  time.Time
-		wantBonus  float64
+		name      string
+		plan      string
+		expiresAt time.Time
+		wantBonus float64
 	}{
 		{"no_expiry_set", "team", time.Time{}, 0},
 		{"free_plan_skipped", "free", now.Add(2 * 24 * time.Hour), 0},

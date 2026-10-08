@@ -70,6 +70,7 @@ func (h *Handler) ProbeAccountModels(c *gin.Context) {
 		return
 	}
 
+	h.refreshImportedDaybreak(c.Request.Context(), id)
 	models := proxy.TextTestModelIDs(c.Request.Context(), h.db)
 	if account.IsClaudeOAuth() {
 		models = claudeProbeModelIDs(account)

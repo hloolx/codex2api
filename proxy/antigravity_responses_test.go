@@ -9,13 +9,16 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/codex2api/auth"
+	"github.com/codex2api/database"
 	"github.com/tidwall/gjson"
 )
 
@@ -57,9 +60,6 @@ func TestAntigravityResponsesLogicalModelsSelectBackingAndBudgetByEffort(t *test
 		wire   string
 		budget int
 	}{
-		{model: "gemini-3.5-flash", effort: "none", wire: "gemini-3.5-flash-extra-low", budget: 1000},
-		{model: "gemini-3.5-flash", effort: "medium", wire: "gemini-3.5-flash-low", budget: 4000},
-		{model: "gemini-3.5-flash", effort: "max", wire: "gemini-3-flash-agent", budget: 10000},
 		{model: "gemini-3.6-flash", effort: "minimal", wire: "gemini-3.6-flash-low", budget: 4096},
 		{model: "gemini-3.6-flash", effort: "medium", wire: "gemini-3.6-flash-medium", budget: 8192},
 		{model: "gemini-3.6-flash", effort: "xhigh", wire: "gemini-3.6-flash-high", budget: 24576},
@@ -91,7 +91,6 @@ func TestAntigravityResponsesLogicalModelsSelectBackingAndBudgetByEffort(t *test
 		model, wire string
 		budget      int
 	}{
-		{model: "gemini-3.5-flash", wire: "gemini-3.5-flash-low", budget: 4000},
 		{model: "gemini-3.6-flash", wire: "gemini-3.6-flash-medium", budget: 8192},
 		{model: "gemini-3.7-flash", wire: "gemini-3.7-flash-tiered", budget: 8192},
 		{model: "gemini-3.1-pro", wire: "gemini-pro-agent", budget: 10001},
@@ -143,9 +142,6 @@ func TestAntigravityResponsesReasoningUsesVariantSpecificBudgets(t *testing.T) {
 		max    int
 		wire   string
 	}{
-		{model: "gemini-3.5-flash-low", effort: "high", budget: 1000, max: 65536, wire: "gemini-3.5-flash-extra-low"},
-		{model: "gemini-3.5-flash-medium", effort: "low", budget: 4000, max: 65536, wire: "gemini-3.5-flash-low"},
-		{model: "gemini-3.5-flash-high", effort: "low", budget: 10000, max: 65536, wire: "gemini-3-flash-agent"},
 		{model: "gemini-3.6-flash-low", effort: "high", budget: 4096, max: 65535, wire: "gemini-3.6-flash-low"},
 		{model: "gemini-3.6-flash-medium", effort: "low", budget: 8192, max: 65535, wire: "gemini-3.6-flash-medium"},
 		{model: "gemini-3.6-flash-high", effort: "low", budget: 24576, max: 65535, wire: "gemini-3.6-flash-high"},
@@ -221,6 +217,64 @@ func TestAntigravityResponsesNonGeminiPreservesMaxOutputTokens(t *testing.T) {
 	}
 }
 
+func TestAntigravityResponsesCapsMaxOutputTokensFromSyncedCatalog(t *testing.T) {
+	db, err := database.New("sqlite", filepath.Join(t.TempDir(), "antigravity-max-output.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	ctx := context.Background()
+	quota, err := json.Marshal(auth.AntigravityQuotaSnapshot{Models: []auth.AntigravityModelQuota{
+		{ModelID: "claude-opus-5-5-high", MaxOutputTokens: func() *int { v := 128000; return &v }()},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := db.InsertAccountWithUpstream(ctx, "antigravity", "google", auth.UpstreamAntigravity, map[string]any{
+		"upstream_type":     auth.UpstreamAntigravity,
+		"access_token":      "token",
+		"refresh_token":     "refresh",
+		"project_id":        "project",
+		"models":            []string{"claude-opus-5-5-high"},
+		"antigravity_quota": string(quota),
+	}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := auth.NewStore(db, nil, nil)
+	t.Cleanup(store.Stop)
+	if err := store.LoadAccountByID(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	account := store.FindByID(id)
+	if account == nil {
+		t.Fatal("loaded account is nil")
+	}
+
+	for _, test := range []struct {
+		name    string
+		account *auth.Account
+		request int
+		want    int
+	}{
+		{name: "synced limit admits 128k", account: account, request: 128000, want: 128000},
+		{name: "synced limit caps above", account: account, request: 200000, want: 128000},
+		{name: "static fallback without catalog", account: nil, request: 128000, want: 64000},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			body := []byte(`{"input":"hello","max_output_tokens":` + strconv.Itoa(test.request) + `}`)
+			got, err := responsesToGeminiInternalForAccount(body, "project", "claude-opus-5-5-high", test.account)
+			if err != nil {
+				t.Fatal(err)
+			}
+			config := got["request"].(map[string]any)["generationConfig"].(map[string]any)
+			if config["maxOutputTokens"] != test.want {
+				t.Fatalf("maxOutputTokens = %v, want %d", config["maxOutputTokens"], test.want)
+			}
+		})
+	}
+}
+
 func TestAntigravityResponsesConvertsFunctionDeclarations(t *testing.T) {
 	t.Setenv(antigravityFunctionToolsEnv, "true")
 	got, err := responsesToGeminiInternal([]byte(`{
@@ -238,7 +292,7 @@ func TestAntigravityResponsesConvertsFunctionDeclarations(t *testing.T) {
 				"required":["query"]
 			}
 		}]
-	}`), "project", "gemini-3-flash-agent")
+	}`), "project", "gemini-3.6-flash-high")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -303,7 +357,7 @@ func TestAntigravityGeminiParametersDropsNestedOrphanRequiredFields(t *testing.T
 				"required":["environment"]
 			}
 		}]
-	}`), "project", "gemini-3-flash-agent")
+	}`), "project", "gemini-3.6-flash-high")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -322,7 +376,7 @@ func TestAntigravityResponsesConvertsFunctionCallRoundTripInput(t *testing.T) {
 			{"type":"function_call","call_id":"call_1","name":"lookup","arguments":"{\"query\":\"value\"}"},
 			{"type":"function_call_output","call_id":"call_1","output":"found"}
 		]
-	}`), "project", "gemini-3-flash-agent")
+	}`), "project", "gemini-3.6-flash-high")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -451,7 +505,7 @@ func TestAntigravityResponsesSkipsEchoedReasoningItems(t *testing.T) {
 			{"type":"function_call","call_id":"call_1","name":"lookup","arguments":"{\"query\":\"value\"}"},
 			{"type":"function_call_output","call_id":"call_1","output":"found"}
 		]
-	}`), "project", "gemini-3-flash-agent")
+	}`), "project", "gemini-3.6-flash-high")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -748,7 +802,6 @@ func TestAntigravityInteractionsLogicalModelsUseRequestedEffort(t *testing.T) {
 	for _, test := range []struct {
 		model, effort, wire, normalized string
 	}{
-		{model: "gemini-3.5-flash", effort: "low", wire: "gemini-3.5-flash-extra-low", normalized: "low"},
 		{model: "gemini-3.6-flash", effort: "max", wire: "gemini-3.6-flash-high", normalized: "high"},
 		{model: "gemini-3.7-flash", effort: "medium", wire: "gemini-3.7-flash-tiered", normalized: "medium"},
 		{model: "gemini-3.1-pro", effort: "medium", wire: "gemini-pro-agent", normalized: "high"},
@@ -936,7 +989,7 @@ func TestAntigravityOAuthWireUsesOfficialIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = resp.Body.Close()
-	if gotHTTPUserAgent != antigravityOfficialHTTPUserAgent {
+	if gotHTTPUserAgent != auth.AntigravityUserAgent() {
 		t.Fatalf("HTTP User-Agent = %q", gotHTTPUserAgent)
 	}
 	if gotBody["userAgent"] != antigravityOfficialBodyUserAgent {

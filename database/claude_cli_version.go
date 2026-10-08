@@ -82,6 +82,9 @@ func (db *DB) UpdateAccountCustomHeaders(ctx context.Context, id int64, headers 
 		if _, err := tx.ExecContext(ctx, update, credJSON, id); err != nil {
 			return err
 		}
+		if err := invalidateDaybreakIdentity(ctx, tx, id); err != nil {
+			return err
+		}
 		return tx.Commit()
 	})
 }

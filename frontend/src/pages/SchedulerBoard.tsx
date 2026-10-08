@@ -16,6 +16,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Select } from '@/components/ui/select'
+import { getTimezone } from '../utils/time'
 
 const DEFAULT_PAGE_SIZE = 12
 const PAGE_SIZE_OPTIONS = [12, 20, 50, 100]
@@ -452,5 +453,6 @@ function formatTimeLabel(iso: string): string {
   }
   return date.toLocaleTimeString('zh-CN', {
     hour12: false,
+    timeZone: getTimezone(),
   })
 }

@@ -17,6 +17,7 @@ import {
   Power,
   PowerOff,
   RefreshCw,
+  RadioTower,
   RotateCcw,
   Timer,
   Trash2,
@@ -196,6 +197,7 @@ export interface AccountDetailSheetProps {
   onPrev?: () => void;
   onNext?: () => void;
   onQuickConfig?: () => void;
+  onChannelMonitor?: () => void;
   onEdit: () => void;
   onUsage: () => void;
   onTest: () => void;
@@ -230,6 +232,7 @@ export default function AccountDetailSheet({
   onPrev,
   onNext,
   onQuickConfig,
+  onChannelMonitor,
   onEdit,
   onUsage,
   onTest,
@@ -301,8 +304,8 @@ export default function AccountDetailSheet({
         (isGrok && account.grok_auth_kind !== "oauth")),
   );
   // 凭据导出由各 provider 自己决定格式；Claude 使用专用安全导出端点，
-  // Grok 仍由其专用页面处理。旧的 Codex auth.json 行为保持不变。
-  const showAuthJson = Boolean(account && !isGrok);
+  // Grok OAuth 由其页面生成 Grok CLI 格式（API Key 账号没有 CLI 登录态）。
+  const showAuthJson = Boolean(account && (!isGrok || account.grok_auth_kind === "oauth"));
   const showResetCredits = Boolean(account && !isGrok && !isClaude);
   const authJsonDisabled = Boolean(
     account &&
@@ -877,10 +880,21 @@ export default function AccountDetailSheet({
                   variant="outline"
                   size="sm"
                   onClick={onQuickConfig}
-                  className="col-span-2 border-primary/40 bg-primary/10 font-bold text-primary hover:bg-primary/20"
+                  className={`${onChannelMonitor ? "" : "col-span-2"} border-primary/40 bg-primary/10 font-bold text-primary hover:bg-primary/20`}
                 >
                   <Fingerprint className="size-4 text-primary" />
                   <span>指纹与快捷配置</span>
+                </Button>
+              ) : null}
+              {onChannelMonitor ? (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={onChannelMonitor}
+                >
+                  <RadioTower className="size-4 text-emerald-600 dark:text-emerald-400" />
+                  <span>渠道监控</span>
                 </Button>
               ) : null}
               <Button type="button" variant="default" size="sm" onClick={onEdit}>

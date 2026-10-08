@@ -23,7 +23,7 @@ func BenchmarkSchedulerSaturatedWait(b *testing.B) {
 			for i := 0; i < b.N; i++ {
 				b.StopTimer()
 				acc := newFastSchedulerTestAccount(1, HealthTierHealthy, 90, 1)
-				store := &Store{accounts: []*Account{acc}, maxConcurrency: 1, schedulerMetrics: newSchedulerRuntimeMetrics()}
+				store := (&Store{accounts: []*Account{acc}, schedulerMetrics: newSchedulerRuntimeMetrics()}).withMaxConcurrency(1)
 				store.rebuildAccountIndex()
 				store.SetSchedulerEngine("indexed")
 				held := store.Next()

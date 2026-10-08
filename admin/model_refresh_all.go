@@ -197,7 +197,7 @@ func (h *Handler) defaultModelRefreshFuncs() map[string]channelModelRefreshFunc 
 // modelPricingCatalogKeys 返回定价页/模型目录当前展示的全部规范模型键（各渠道拼接），
 // 与 ListModelPricing 的口径一致。
 func (h *Handler) modelPricingCatalogKeys(ctx context.Context) []string {
-	keys := modelPricingManagementKeys(proxy.SupportedModelIDs(ctx, h.db))
+	keys := modelPricingManagementKeys(h.codexPricingModelIDs(ctx))
 	seen := make(map[string]struct{}, len(keys))
 	for _, key := range keys {
 		seen[key] = struct{}{}
@@ -411,7 +411,7 @@ func (h *Handler) refreshCodexChannelModels(ctx context.Context, emit modelRefre
 	now := time.Now().UTC()
 	h.probePlanGroups(ctx, database.UpstreamChannelCodex, h.planGroupsFor(isCodexOAuthAccount), &result, emit,
 		func(ctx context.Context, group modelRefreshPlanGroup) (int, []string, error) {
-			manifest, err := proxy.FetchCodexModelsManifest(ctx, group.Sample, h.store.ResolveProxyForAccount(group.Sample), "", "")
+			manifest, err := proxy.FetchCodexModelsManifest(ctx, group.Sample, h.store.ResolveProxyForAccount(group.Sample), "", "", nil)
 			if err != nil {
 				return 0, nil, err
 			}
@@ -492,6 +492,9 @@ func (h *Handler) refreshGrokChannelModels(ctx context.Context, emit modelRefres
 			}
 			if syncResult.capabilityGeneration > 0 {
 				h.triggerGrokCapabilityProbeForGeneration(id, syncResult.capabilityGeneration)
+			}
+			if modelErr := syncResult.Errors["models"]; modelErr != "" {
+				return len(syncResult.Models), nil, fmt.Errorf("模型目录刷新失败: %s", modelErr)
 			}
 			return len(syncResult.Models), nil, nil
 		})

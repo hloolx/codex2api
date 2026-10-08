@@ -36,6 +36,19 @@ func TestCodexUACatalogIntegrity(t *testing.T) {
 				t.Fatalf("%s: bad terminal entry %+v", kind, term)
 			}
 		}
+		for _, term := range spec.ReferenceTerminals {
+			// Codex 会把 [A-Za-z0-9-_./] 以外的字符替换成 "_",预设不能出现真实客户端发不出的 token。
+			if !validCodexUserAgentToken(term) || strings.IndexFunc(term, func(r rune) bool {
+				return !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || strings.ContainsRune("-_./", r))
+			}) >= 0 {
+				t.Fatalf("%s: bad reference terminal %q", kind, term)
+			}
+		}
+		for _, p := range spec.ReferencePlatforms {
+			if !validCodexUserAgentPlatformPart(p.OSName) || !validCodexUserAgentPlatformPart(p.OSVersion) || !validCodexUserAgentToken(p.Arch) {
+				t.Fatalf("%s: bad reference platform %+v", kind, p)
+			}
+		}
 		for i, pair := range spec.VersionPairs {
 			if pair.Weight <= 0 || !validCodexClientVersionString(pair.CLIVersion) || !validCodexUserAgentToken(pair.AppVersion) {
 				t.Fatalf("%s: bad version pair %+v", kind, pair)
@@ -83,14 +96,14 @@ func TestResolveCodexVersionPairDesktop(t *testing.T) {
 		floor         string
 		wantCLI, want string
 	}{
-		{"auto default is heaviest pair", "", "", "", "0.153.4", "26.901.51231"},
-		{"auto exact hit", "0.153.3", "", "", "0.153.3", "26.901.41123"},
-		{"auto unknown newer stays on nearest real pair", "0.153.5", "", "", "0.153.4", "26.901.51231"},
-		{"auto old version raised to smallest pair meeting floor", "0.152.0", "", "0.153.0", "0.153.0", "26.901.22334"},
-		{"auto floor above catalog uses floor with newest build", "", "", "0.160.0", "0.160.0", "26.901.51231"},
+		{"auto default is latest build", "", "", "", "0.153.4", "26.901.51231"},
+		{"manual CLI overrides latest default", "0.153.3", "", "", "0.153.3", "26.901.51231"},
+		{"manual newer CLI retained", "0.153.5", "", "", "0.153.5", "26.901.51231"},
+		{"manual old CLI ignores floor", "0.152.0", "", "0.153.0", "0.152.0", "26.901.51231"},
+		{"unavailable floor produces no invented pair", "", "", "0.160.0", "", ""},
 		{"explicit build untouched", "0.153.4", "26.901.41600", "", "0.153.4", "26.901.41600"},
-		{"explicit build re-paired when floor raises cli", "0.152.0", "26.831.20005", "0.153.0", "0.153.0", "26.901.22334"},
-		{"explicit build kept when floor above catalog", "0.152.0", "26.831.20005", "0.160.0", "0.160.0", "26.831.20005"},
+		{"both overrides ignore floor", "0.152.0", "26.831.20005", "0.153.0", "0.152.0", "26.831.20005"},
+		{"both overrides ignore unavailable floor", "0.152.0", "26.831.20005", "0.160.0", "0.152.0", "26.831.20005"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -107,8 +120,8 @@ func TestResolveCodexVersionPairFollowsCLIForTUI(t *testing.T) {
 	if cli, app := resolveCodexVersionPair(spec, "", "", ""); cli != latestCodexCLIVersion || app != cli {
 		t.Fatalf("tui default = (%s, %s), want latest CLI twice", cli, app)
 	}
-	if cli, app := resolveCodexVersionPair(spec, "0.140.0", "", "0.150.0"); cli != "0.150.0" || app != "0.150.0" {
-		t.Fatalf("tui floor = (%s, %s), want 0.150.0 twice", cli, app)
+	if cli, app := resolveCodexVersionPair(spec, "0.140.0", "", "0.150.0"); cli != "0.140.0" || app != "0.140.0" {
+		t.Fatalf("tui floor = (%s, %s), want manual 0.140.0 twice", cli, app)
 	}
 	if cli, app := resolveCodexVersionPair(nil, "0.140.0", "9.9", ""); cli != "0.140.0" || app != "9.9" {
 		t.Fatalf("custom explicit = (%s, %s), want (0.140.0, 9.9)", cli, app)
@@ -125,7 +138,7 @@ func TestBuildCodexStructuredUserAgentByKind(t *testing.T) {
 		{"desktop preset", `{"client_kind":"codex-desktop"}`,
 			"Codex Desktop/0.153.4 (Windows 10.0.26200; x86_64) unknown (Codex Desktop; 26.901.51231)", "0.153.4"},
 		{"vscode preset with cursor host", `{"client_kind":"codex-vscode","app_name":"Cursor"}`,
-			"codex_vscode/0.153.0 (Ubuntu 22.4.0; x86_64) unknown (Cursor; 26.901.22334)", "0.153.0"},
+			"codex_vscode/0.153.4 (Ubuntu 22.4.0; x86_64) unknown (Cursor; 26.901.22334)", "0.153.4"},
 		{"exec preset follows cli", `{"client_kind":"codex-exec"}`,
 			"codex_exec/" + latestCodexCLIVersion + " (Windows 10.0.19045; x86_64) unknown (codex_exec; " + latestCodexCLIVersion + ")", latestCodexCLIVersion},
 		{"legacy tui config unchanged", `{"client_name":"codex-tui"}`,
@@ -133,7 +146,7 @@ func TestBuildCodexStructuredUserAgentByKind(t *testing.T) {
 		{"custom keeps free-form marker", `{"client_kind":"custom","client_name":"my-router","app_name":"My App","app_version":"9.9"}`,
 			"my-router/" + latestCodexCLIVersion + " (Mac OS 15.5.0; arm64) xterm-256color (My App; 9.9)", latestCodexCLIVersion},
 		{"desktop with mac platform and explicit cli", `{"client_kind":"codex-desktop","client_version":"0.153.3","os_name":"Mac OS","os_version":"26.5.2","arch":"arm64"}`,
-			"Codex Desktop/0.153.3 (Mac OS 26.5.2; arm64) unknown (Codex Desktop; 26.901.41123)", "0.153.3"},
+			"Codex Desktop/0.153.3 (Mac OS 26.5.2; arm64) unknown (Codex Desktop; 26.901.51231)", "0.153.3"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -279,11 +292,46 @@ func TestPreviewCodexUserAgentConfig(t *testing.T) {
 		}
 	}
 
+	ref, err := PreviewCodexUserAgentConfig(`{"client_kind":"codex-tui","terminal":"iTerm.app/3.7.3"}`, "", nil)
+	if err != nil || len(ref.Warnings) != 0 || !strings.Contains(ref.Persona.UserAgent, " iTerm.app/3.7.3 ") {
+		t.Fatalf("reference terminal preview = %+v, err %v", ref, err)
+	}
+	mac27, err := PreviewCodexUserAgentConfig(`{"client_kind":"codex-desktop","os_name":"Mac OS","os_version":"27.0.0","arch":"arm64"}`, "", nil)
+	if err != nil || len(mac27.Warnings) != 0 || !strings.Contains(mac27.Persona.UserAgent, " (Mac OS 27.0.0; arm64) ") {
+		t.Fatalf("reference platform preview = %+v, err %v", mac27, err)
+	}
+
 	empty, err := PreviewCodexUserAgentConfig(`{}`, "", nil)
 	if err != nil || empty.Persona == nil || !strings.HasPrefix(empty.Persona.UserAgent, "codex-tui/") {
 		t.Fatalf("empty config preview = %+v, err %v", empty, err)
 	}
 	if _, err := PreviewCodexUserAgentConfig(`{"client_kind":"nope"}`, "", nil); err == nil {
 		t.Fatal("invalid config must surface as error")
+	}
+}
+
+func TestCodexUserAgentCatalogReferenceTerminals(t *testing.T) {
+	view := CodexUserAgentCatalog()
+	for _, kind := range view.Kinds {
+		spec := codexUACatalog[CodexClientKind(kind.Kind)]
+		if kind.ReferenceTerminals == nil {
+			t.Fatalf("%s: reference_terminals must serialize as an array", kind.Kind)
+		}
+		for _, term := range kind.ReferenceTerminals {
+			if codexUAHasOption(spec.Terminals, term) {
+				t.Fatalf("%s: reference terminal %q duplicates an observed terminal", kind.Kind, term)
+			}
+		}
+		if len(kind.ReferencePlatforms) == 0 {
+			t.Fatalf("%s: Mac OS 27.0.0 reference platform missing", kind.Kind)
+		}
+		for _, p := range kind.ReferencePlatforms {
+			if codexUAHasPlatform(spec.Platforms, codexUAPlatform{OSName: p.OSName, OSVersion: p.OSVersion, Arch: p.Arch}) {
+				t.Fatalf("%s: reference platform %+v duplicates an observed platform", kind.Kind, p)
+			}
+		}
+	}
+	if len(codexUACatalog[CodexClientKindDesktop].ReferenceTerminals) != 0 {
+		t.Fatal("desktop app never runs inside a terminal; it must not offer terminal presets")
 	}
 }

@@ -95,12 +95,41 @@
     "cached_input_long": 0.4,
     "output_long": 18
   },
+  "gpt-6-luna": {
+    "input": 0.1,
+    "cached_input": 0.01,
+    "output": 0.5,
+    "input_long": 0.2,
+    "cached_input_long": 0.02,
+    "output_long": 0.75
+  },
+  "gpt-6.1-sol": {
+    "input": 2,
+    "cached_input": 0.1,
+    "cache_write_5m": 2.5,
+    "cache_write_1h": 2.5,
+    "output": 10,
+    "input_long": 4,
+    "cached_input_long": 0.2,
+    "output_long": 15
+  },
+  "gpt-6-sol": {
+    "input": 2,
+    "cached_input": 0.2,
+    "output": 10,
+    "input_long": 4,
+    "cached_input_long": 0.4,
+    "output_long": 15
+  },
   "gpt-6-astra": {
     "input": 10,
     "cached_input": 1,
     "output": 50,
     "input_priority": 20,
     "cached_input_priority": 2,
-    "output_priority": 100
+    "output_priority": 100,
+    "input_long": 20,
+    "cached_input_long": 2,
+    "output_long": 75
   }
 }

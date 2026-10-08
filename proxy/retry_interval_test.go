@@ -464,10 +464,10 @@ func TestResponsesWebSocketUnlimitedRetryStopsAfterClientClose(t *testing.T) {
 	_ = conn.Close()
 
 	deadline := time.Now().Add(2 * time.Second)
-	for atomic.LoadInt64(&account.ActiveRequests) != 0 && time.Now().Before(deadline) {
+	for account.ActiveRequests.Load() != 0 && time.Now().Before(deadline) {
 		time.Sleep(10 * time.Millisecond)
 	}
-	if got := atomic.LoadInt64(&account.ActiveRequests); got != 0 {
+	if got := account.ActiveRequests.Load(); got != 0 {
 		t.Fatalf("ActiveRequests after client close = %d, want 0", got)
 	}
 	time.Sleep(600 * time.Millisecond)
@@ -547,10 +547,10 @@ func TestResponsesWebSocketInboundOverflowCancelsActiveTurn(t *testing.T) {
 	}
 
 	deadline := time.Now().Add(upstreamDrainTimeout + 2*time.Second)
-	for atomic.LoadInt64(&account.ActiveRequests) != 0 && time.Now().Before(deadline) {
+	for account.ActiveRequests.Load() != 0 && time.Now().Before(deadline) {
 		time.Sleep(10 * time.Millisecond)
 	}
-	if got := atomic.LoadInt64(&account.ActiveRequests); got != 0 {
+	if got := account.ActiveRequests.Load(); got != 0 {
 		t.Fatalf("ActiveRequests after inbound overflow drain = %d, want 0", got)
 	}
 	time.Sleep(100 * time.Millisecond)

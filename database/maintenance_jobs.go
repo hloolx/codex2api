@@ -10,6 +10,17 @@ import (
 )
 
 const MaintenanceJobGrokFreshness = "grok_freshness"
+const MaintenanceJobGrokCapability = "grok_capability"
+
+// Enqueue without resetting a failed or leased task's backoff.
+func (db *DB) EnqueueGrokCapabilityMaintenance(ctx context.Context, id int64, due time.Time) error {
+	_, err := db.conn.ExecContext(ctx, `INSERT INTO maintenance_jobs(entity_id,job_kind,due_at,updated_at)
+		VALUES($1,$2,$3,CURRENT_TIMESTAMP)
+		ON CONFLICT(entity_id,job_kind) DO UPDATE SET
+		due_at=CASE WHEN maintenance_jobs.attempts=0 AND maintenance_jobs.lease_owner='' AND maintenance_jobs.due_at>excluded.due_at
+		THEN excluded.due_at ELSE maintenance_jobs.due_at END`, id, MaintenanceJobGrokCapability, db.timeArg(due))
+	return err
+}
 
 type MaintenanceJob struct {
 	EntityID   int64

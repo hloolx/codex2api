@@ -803,3 +803,15 @@ func TestAntigravityClientKeepsPreservedProjectWithoutOnboarding(t *testing.T) {
 		t.Fatalf("project = %q, onboard calls = %d; a preserved project must not trigger onboarding", entitlements.ProjectID, onboardCalls)
 	}
 }
+
+func TestAntigravityAICreditsMissingAmountIsZeroBalance(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, `{"paidTier":{"id":"g1-pro-tier","availableCredits":[{"creditType":"GOOGLE_ONE_AI","minimumCreditAmountForUsage":"50"}]}}`)
+	}))
+	defer server.Close()
+	client := newAntigravityClient(server.Client(), AntigravityEndpoints{AICredits: []string{server.URL}})
+	credits, ok := client.fetchAICredits(context.Background(), "token")
+	if !ok || credits == nil || credits.Credits != 0 {
+		t.Fatalf("fetchAICredits() = %+v, %v; want zero balance", credits, ok)
+	}
+}

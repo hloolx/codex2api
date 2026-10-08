@@ -361,7 +361,9 @@ func (h *Handler) createUpstreamLiveCall(
 	if err != nil {
 		return nil, 0, "", nil, err
 	}
-	h.applyLiveUpstreamHeaders(req, account, attestation, downstream, apiKey)
+	if err := h.applyLiveUpstreamHeaders(req, account, attestation, downstream, apiKey); err != nil {
+		return nil, StatusCodeFromError(err), "", nil, err
+	}
 
 	proxyURL := ""
 	if h.store != nil {
@@ -390,12 +392,16 @@ func (h *Handler) createUpstreamLiveCall(
 	return &liveCallCreated{sdp: responseBody, callID: callID}, resp.StatusCode, resp.Header.Get("Content-Type"), responseBody, nil
 }
 
-func (h *Handler) applyLiveUpstreamHeaders(req *http.Request, account *auth.Account, attestation string, downstream http.Header, apiKey string) {
+func (h *Handler) applyLiveUpstreamHeaders(req *http.Request, account *auth.Account, attestation string, downstream http.Header, apiKey string) error {
 	if req == nil || account == nil {
-		return
+		return nil
 	}
 	accessToken := account.GetAccessToken()
-	userAgent, version := ResolveCodexOutboundClientHeaders(account, apiKey, h.deviceCfg, downstream)
+	identity, err := ResolveCodexOutboundClientIdentity(CodexClientIdentityInput{Account: account, APIKey: apiKey, DeviceConfig: h.deviceCfg, Headers: downstream})
+	if err != nil {
+		return err
+	}
+	userAgent, version := identity.UserAgent, identity.Version
 	if account.IsCodexAgentIdentity() {
 		if assertion, err := account.BuildCodexAgentAssertion(time.Now()); err == nil {
 			req.Header.Set("Authorization", assertion)
@@ -408,7 +414,7 @@ func (h *Handler) applyLiveUpstreamHeaders(req *http.Request, account *auth.Acco
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/sdp")
 	req.Header.Set("User-Agent", userAgent)
-	req.Header.Set("Originator", Originator)
+	req.Header.Set("Originator", CodexOriginatorForGeneratedUserAgent(userAgent))
 	if version != "" {
 		req.Header.Set("Version", version)
 	}
@@ -429,6 +435,7 @@ func (h *Handler) applyLiveUpstreamHeaders(req *http.Request, account *auth.Acco
 	if strings.TrimSpace(attestation) != "" {
 		req.Header.Set(liveAttestationHeader, attestation)
 	}
+	return nil
 }
 
 func (h *Handler) prepareLiveAttestation(ctx context.Context, clientHeader string) (string, string, error) {

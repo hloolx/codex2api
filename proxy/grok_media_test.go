@@ -746,6 +746,12 @@ func TestGrokMediaPreferredAccountFilter(t *testing.T) {
 	if filter(unknown) {
 		t.Error("unknown plan oauth must fall to the fallback tier")
 	}
+	// AT 无 tier、导入无 plan_type 时,控制面 display 事实给出的付费套餐同样进首选层。
+	displayPaid := &auth.Account{DBID: 6, UpstreamType: auth.UpstreamGrok, AccessToken: "at",
+		CredentialGeneration: 1, GrokFactsGeneration: 1, GrokDisplayPlan: "SuperGrok"}
+	if !filter(displayPaid) {
+		t.Error("paid plan from settings display fact must be preferred")
+	}
 	if !filter(apiKey) {
 		t.Error("api-key credential must be preferred regardless of plan")
 	}

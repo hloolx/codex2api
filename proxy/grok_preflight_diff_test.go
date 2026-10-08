@@ -227,6 +227,23 @@ func TestGrokPreflightMatchesLegacyOnLargeBodies(t *testing.T) {
 
 // TestGrokPreflightPreservesUntouchedBody 无需改写的请求体必须原样返回，
 // 不为等价内容白付一次重建。
+func TestGrokPreflightKeepsPromptCacheKey(t *testing.T) {
+	body := []byte(`{"model":"grok-4.7","prompt_cache_key":"session-1","client_metadata":{"cli":"codex"},"service_tier":"priority","safety_identifier":"sid","stream":true}`)
+	got := prepareGrokUpstreamBody(body)
+	if gjson.GetBytes(got.Body, "prompt_cache_key").String() != "session-1" {
+		t.Fatalf("prompt_cache_key dropped: %s", got.Body)
+	}
+	for _, field := range []string{"client_metadata", "service_tier", "safety_identifier"} {
+		if gjson.GetBytes(got.Body, field).Exists() {
+			t.Fatalf("%s kept: %s", field, got.Body)
+		}
+	}
+	legacy := sanitizeGrokRequestBody(body)
+	if gjson.GetBytes(legacy, "prompt_cache_key").String() != "session-1" {
+		t.Fatalf("legacy sanitize dropped prompt_cache_key: %s", legacy)
+	}
+}
+
 func TestGrokPreflightPreservesUntouchedBody(t *testing.T) {
 	body := []byte(`{"model":"grok-4.5","stream":true,"input":[{"type":"message","role":"user","content":"hi"}]}`)
 	got := prepareGrokUpstreamBody(body)

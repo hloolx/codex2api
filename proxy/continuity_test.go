@@ -16,12 +16,12 @@ func TestResolveContinuity(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	tests := []struct {
-		name        string
-		ctx         context.Context
-		account     *auth.Account
-		req         Request
-		opts        Options
-		wantSource  string
+		name         string
+		ctx          context.Context
+		account      *auth.Account
+		req          Request
+		opts         Options
+		wantSource   string
 		wantNonEmpty bool
 	}{
 		{
@@ -285,7 +285,7 @@ func TestApplyContinuityHeaders(t *testing.T) {
 			wantValue:  "",
 		},
 		{
-			name: "nil headers",
+			name:       "nil headers",
 			headers:    nil,
 			continuity: Continuity{Key: "session-456", Source: "test"},
 			wantValue:  "",

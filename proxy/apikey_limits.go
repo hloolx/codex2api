@@ -129,6 +129,12 @@ func apiKeyBatchWouldExceed(current int64, limit, requests int) bool {
 //   - http.StatusForbidden (403): 模型不在白名单 / 在黑名单
 //   - http.StatusTooManyRequests (429): rpm/rpd/cost/token 任一窗口超额
 func (h *Handler) enforceAPIKeyLimits(c *gin.Context, model string) (int, string) {
+	var daybreakStatus int
+	var daybreakMessage string
+	model, daybreakStatus, daybreakMessage = h.checkDaybreakRequest(c, model)
+	if daybreakStatus != 0 {
+		return daybreakStatus, daybreakMessage
+	}
 	h.attachAPIKeyModelRequestQuota(c, false)
 	row := apiKeyRowFromContext(c)
 	if row == nil {
@@ -322,6 +328,9 @@ func SendAPIKeyLimitError(c *gin.Context, status int, msg string) {
 	if status == http.StatusForbidden {
 		errType = api.ErrorTypePermission
 		errCode = api.ErrCodeInvalidRequest
+	}
+	if status == http.StatusBadRequest {
+		errType, errCode = api.ErrorTypeInvalidRequest, api.ErrCodeInvalidParameter
 	}
 	api.SendErrorWithStatus(c, api.NewAPIError(errCode, msg, errType), status)
 }

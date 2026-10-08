@@ -26,7 +26,7 @@ func (c *schedulerCountingCache) GetRuntime(ctx context.Context, namespace, key 
 func TestIndexedSelectionBoundsModelCacheReads(t *testing.T) {
 	tokenCache := &schedulerCountingCache{TokenCache: cache.NewMemory(1)}
 	defer tokenCache.Close()
-	s := &Store{maxConcurrency: 4, tokenCache: tokenCache, schedulerMetrics: newSchedulerRuntimeMetrics()}
+	s := (&Store{tokenCache: tokenCache, schedulerMetrics: newSchedulerRuntimeMetrics()}).withMaxConcurrency(4)
 	for id := int64(1); id <= 1000; id++ {
 		s.accounts = append(s.accounts, newFastSchedulerTestAccount(id, HealthTierHealthy, 100, 4))
 	}
@@ -53,7 +53,7 @@ func TestSchedulerAdmissionRejectsDisabledAccount(t *testing.T) {
 	for _, engine := range []string{"legacy", "indexed"} {
 		t.Run(engine, func(t *testing.T) {
 			acc := newFastSchedulerTestAccount(1, HealthTierHealthy, 100, 4)
-			s := &Store{accounts: []*Account{acc}, maxConcurrency: 4}
+			s := (&Store{accounts: []*Account{acc}}).withMaxConcurrency(4)
 			s.rebuildAccountIndex()
 			s.SetSchedulerEngine(engine)
 			atomic.StoreInt32(&acc.Disabled, 1)

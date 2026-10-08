@@ -110,6 +110,7 @@ func (db *DB) configureSQLite(ctx context.Context) error {
 
 func (db *DB) migrateSQLite(ctx context.Context) error {
 	statements := []string{
+		codexClientVersionCacheSchema,
 		`CREATE TABLE IF NOT EXISTS accounts (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			name TEXT DEFAULT '',
@@ -157,6 +158,8 @@ func (db *DB) migrateSQLite(ctx context.Context) error {
 			client_user_agent TEXT DEFAULT '',
 			upstream_user_agent TEXT DEFAULT '',
 			user_agent_overridden INTEGER DEFAULT 0,
+			turn_state_overridden INTEGER DEFAULT 0,
+			turn_state_rewrite_note TEXT DEFAULT '',
 			internal_reason TEXT DEFAULT '',
 			parent_request_id TEXT DEFAULT '',
 			endpoint TEXT DEFAULT '',
@@ -174,6 +177,9 @@ func (db *DB) migrateSQLite(ctx context.Context) error {
 			ws_acquire_ms INTEGER DEFAULT 0,
 			reasoning_effort TEXT DEFAULT '',
 			effective_model TEXT DEFAULT '',
+			daybreak_program TEXT NOT NULL DEFAULT '',
+			upstream_response_model TEXT,
+			upstream_model_mismatch INTEGER,
 			inbound_endpoint TEXT DEFAULT '',
 			upstream_endpoint TEXT DEFAULT '',
 				stream INTEGER DEFAULT 0,
@@ -321,6 +327,7 @@ func (db *DB) migrateSQLite(ctx context.Context) error {
 				first_token_timeout_seconds INTEGER DEFAULT 0,
 				image_storage_config TEXT DEFAULT '{}',
 				show_full_usage_numbers INTEGER DEFAULT 0,
+				show_upstream_model_mismatch INTEGER DEFAULT 1,
 				public_key_usage_page_enabled INTEGER DEFAULT 1,
 				public_image_studio_page_enabled INTEGER DEFAULT 1,
 				public_account_portal_page_enabled INTEGER DEFAULT 0,
@@ -332,6 +339,8 @@ func (db *DB) migrateSQLite(ctx context.Context) error {
 				models_list_read_max_bytes INTEGER NOT NULL DEFAULT 8388608,
 					codex_force_websocket INTEGER DEFAULT 0,
 					codex_telemetry_enabled INTEGER DEFAULT 0,
+					codex_turn_state_template_cache_enabled INTEGER DEFAULT 0,
+					codex_turn_state_account_mode TEXT DEFAULT 'auto',
 					codex_telemetry_timing_debug INTEGER DEFAULT 0,
 					codex_request_compression INTEGER DEFAULT 1,
 					codex_ws_weak_network_mode INTEGER DEFAULT 0,
@@ -361,6 +370,9 @@ func (db *DB) migrateSQLite(ctx context.Context) error {
 					transport_retry_policy TEXT DEFAULT 'rotate',
 					continuous_retry_policy TEXT DEFAULT '{"enabled":false,"catch_all":false,"categories":["transport","http_429","http_5xx","stream_error"],"status_codes":[],"error_codes":[],"max_duration_seconds":600}',
 					codex_synced_cli_version TEXT DEFAULT '',
+					codex_synced_desktop_mac_build TEXT DEFAULT '',
+					codex_synced_desktop_windows_build TEXT DEFAULT '',
+					codex_synced_vscode_build TEXT DEFAULT '',
 					codex_cli_version_sync_enabled INTEGER DEFAULT 1,
 					codex_cli_version_sync_interval_hours INTEGER DEFAULT 12,
 					claude_synced_cli_version TEXT DEFAULT '',
@@ -368,6 +380,8 @@ func (db *DB) migrateSQLite(ctx context.Context) error {
 					model_pricing_sync_url TEXT DEFAULT '',
 					ignore_usage_limit_status INTEGER DEFAULT 0,
 					auto_reset_credits_enabled INTEGER DEFAULT 0,
+					auto_reset_credits_on_exhaustion_enabled INTEGER DEFAULT 0,
+					codex_unified_client_identity_enabled INTEGER DEFAULT 0,
 					auto_reset_credits_before_expiry_min INTEGER DEFAULT 60,
 					auto_activate_5h_window_enabled INTEGER DEFAULT 0,
 					utls_shutdown_timeout_minutes INTEGER DEFAULT 30,
@@ -385,6 +399,7 @@ func (db *DB) migrateSQLite(ctx context.Context) error {
 					oauth_model_cooldown_backoff_enabled INTEGER NOT NULL DEFAULT 1
 				);`,
 		modelCapabilitiesSchema,
+		daybreakSchema,
 		`CREATE TABLE IF NOT EXISTS model_registry (
 			id TEXT PRIMARY KEY,
 			enabled INTEGER DEFAULT 1,
@@ -546,6 +561,9 @@ func (db *DB) migrateSQLite(ctx context.Context) error {
 		{"usage_logs", "ws_acquire_ms", "INTEGER DEFAULT 0"},
 		{"usage_logs", "reasoning_effort", "TEXT DEFAULT ''"},
 		{"usage_logs", "effective_model", "TEXT DEFAULT ''"},
+		{"usage_logs", "daybreak_program", "TEXT NOT NULL DEFAULT ''"},
+		{"usage_logs", "upstream_response_model", "TEXT"},
+		{"usage_logs", "upstream_model_mismatch", "INTEGER"},
 		{"usage_logs", "inbound_endpoint", "TEXT DEFAULT ''"},
 		{"usage_logs", "upstream_endpoint", "TEXT DEFAULT ''"},
 		{"usage_logs", "stream", "INTEGER DEFAULT 0"},
@@ -571,6 +589,8 @@ func (db *DB) migrateSQLite(ctx context.Context) error {
 		{"usage_logs", "client_user_agent", "TEXT DEFAULT ''"},
 		{"usage_logs", "upstream_user_agent", "TEXT DEFAULT ''"},
 		{"usage_logs", "user_agent_overridden", "INTEGER DEFAULT 0"},
+		{"usage_logs", "turn_state_overridden", "INTEGER DEFAULT 0"},
+		{"usage_logs", "turn_state_rewrite_note", "TEXT DEFAULT ''"},
 		{"usage_logs", "internal_reason", "TEXT DEFAULT ''"},
 		{"usage_logs", "parent_request_id", "TEXT DEFAULT ''"},
 		{"usage_logs", "request_id", "TEXT DEFAULT ''"},
@@ -582,6 +602,7 @@ func (db *DB) migrateSQLite(ctx context.Context) error {
 		{"usage_logs", "user_billing_mode", "TEXT DEFAULT ''"},
 		{"usage_logs", "image_unit_price", "REAL DEFAULT 0"},
 		{"usage_logs", "billed_image_count", "INTEGER DEFAULT 0"},
+		{"usage_logs", "video_seconds", "INTEGER DEFAULT 0"},
 		{"usage_logs", "image_count", "INTEGER DEFAULT 0"},
 		{"usage_logs", "image_width", "INTEGER DEFAULT 0"},
 		{"usage_logs", "image_height", "INTEGER DEFAULT 0"},
@@ -645,6 +666,8 @@ func (db *DB) migrateSQLite(ctx context.Context) error {
 		{"system_settings", "codex_force_websocket", "INTEGER DEFAULT 0"},
 		{"system_settings", "codex_basispoints_enabled", "INTEGER DEFAULT 0"},
 		{"system_settings", "codex_telemetry_enabled", "INTEGER DEFAULT 0"},
+		{"system_settings", "codex_turn_state_template_cache_enabled", "INTEGER DEFAULT 0"},
+		{"system_settings", "codex_turn_state_account_mode", "TEXT DEFAULT 'auto'"},
 		{"system_settings", "codex_telemetry_timing_debug", "INTEGER DEFAULT 0"},
 		{"system_settings", "codex_request_compression", "INTEGER DEFAULT 1"},
 		{"system_settings", "codex_ws_weak_network_mode", "INTEGER DEFAULT 0"},
@@ -673,6 +696,9 @@ func (db *DB) migrateSQLite(ctx context.Context) error {
 		{"system_settings", "retry_interval_ms", "INTEGER DEFAULT 0"},
 		{"system_settings", "transport_retry_policy", "TEXT DEFAULT 'rotate'"},
 		{"system_settings", "codex_synced_cli_version", "TEXT DEFAULT ''"},
+		{"system_settings", "codex_synced_desktop_mac_build", "TEXT DEFAULT ''"},
+		{"system_settings", "codex_synced_desktop_windows_build", "TEXT DEFAULT ''"},
+		{"system_settings", "codex_synced_vscode_build", "TEXT DEFAULT ''"},
 		{"system_settings", "codex_cli_version_sync_enabled", "INTEGER DEFAULT 1"},
 		{"system_settings", "codex_cli_version_sync_interval_hours", "INTEGER DEFAULT 12"},
 		{"system_settings", "claude_synced_cli_version", "TEXT DEFAULT ''"},
@@ -680,6 +706,8 @@ func (db *DB) migrateSQLite(ctx context.Context) error {
 		{"system_settings", "model_pricing_sync_url", "TEXT DEFAULT ''"},
 		{"system_settings", "ignore_usage_limit_status", "INTEGER DEFAULT 0"},
 		{"system_settings", "auto_reset_credits_enabled", "INTEGER DEFAULT 0"},
+		{"system_settings", "auto_reset_credits_on_exhaustion_enabled", "INTEGER DEFAULT 0"},
+		{"system_settings", "codex_unified_client_identity_enabled", "INTEGER DEFAULT 0"},
 		{"system_settings", "auto_reset_credits_before_expiry_min", "INTEGER DEFAULT 60"},
 		{"system_settings", "auto_activate_5h_window_enabled", "INTEGER DEFAULT 0"},
 		{"system_settings", "utls_shutdown_timeout_minutes", "INTEGER DEFAULT 30"},
@@ -754,6 +782,7 @@ func (db *DB) migrateSQLite(ctx context.Context) error {
 		{"system_settings", "billing_tier_policy", "TEXT DEFAULT 'actual'"},
 		{"system_settings", "image_storage_config", "TEXT DEFAULT '{}'"},
 		{"system_settings", "show_full_usage_numbers", "INTEGER DEFAULT 0"},
+		{"system_settings", "show_upstream_model_mismatch", "INTEGER DEFAULT 1"},
 		{"system_settings", "public_key_usage_page_enabled", "INTEGER DEFAULT 1"},
 		{"system_settings", "public_image_studio_page_enabled", "INTEGER DEFAULT 1"},
 		{"system_settings", "public_account_portal_page_enabled", "INTEGER DEFAULT 0"},
@@ -1217,10 +1246,6 @@ func (db *DB) getUsageStatsSQLite(ctx context.Context, rangeStart, rangeEnd time
 		stats.AvgUserBilled = stats.TotalUserBilled / float64(stats.TotalRequests)
 	}
 	if includeBreakdowns {
-		stats.ModelStats, err = db.getUsageModelStats(ctx, 10, rangeStart, rangeEnd, channel, dim)
-		if err != nil {
-			return nil, err
-		}
 		if err := db.populateUsageBreakdownStats(ctx, stats, rangeStart, rangeEnd, channel, dim); err != nil {
 			return nil, err
 		}

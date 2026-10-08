@@ -1,4 +1,5 @@
 import { ImageBillingCost } from '../components/image-studio/ImageBillingCost'
+import { mediaBillingUnit, type MediaBillingUnit } from '../lib/imageBilling'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
 import { createPortal } from 'react-dom'
@@ -10,6 +11,7 @@ import Pagination from '../components/Pagination'
 import ChannelFilter, { useUsageChannel } from '../components/ChannelFilter'
 import ChannelLogo from '../components/ChannelLogo'
 import CompactionBadges from '../components/CompactionBadges'
+import UsageDaybreakBadge from '../components/UsageDaybreakBadge'
 import ModelLogo from '../components/ModelLogo'
 import Modal from '../components/Modal'
 import ColumnSettingsMenu from '../components/ColumnSettingsMenu'
@@ -37,9 +39,21 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
-import { Activity, Box, Clock, Zap, Sparkles, AlertTriangle, Search, Brain, DatabaseZap, DatabaseBackup, X, Image as ImageIcon, Info, CircleDollarSign, BarChart3, KeyRound, Route, SlidersHorizontal, ShieldAlert, RefreshCw, ChevronDown, RotateCcw, PlugZap, FlaskConical } from 'lucide-react'
+import { createLucideIcon, Activity, Box, Clock, Zap, Sparkles, AlertTriangle, Search, Brain, DatabaseZap, X, Image as ImageIcon, Info, CircleDollarSign, BarChart3, KeyRound, Route, SlidersHorizontal, ShieldAlert, RefreshCw, ChevronDown, RotateCcw, PlugZap, FlaskConical } from 'lucide-react'
+
 import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
+
+// 缓存写入图标:取 Lucide (ISC) 的 database-plus,与读取用的 DatabaseZap 成对。
+// 锁定的 lucide-react 1.0.1 还没收录它,升级前在这里按同一路径注册。
+const DatabasePlus = createLucideIcon('database-plus', [
+  ['path', { d: 'M19 16v6', key: 'tddt3s' }],
+  ['path', { d: 'M21 12.536V5', key: 'zeza6i' }],
+  ['path', { d: 'M22 19h-6', key: 'vcuq98' }],
+  ['path', { d: 'M3 12A9 3 0 0 0 15.1824 14.8061', key: 'ukc3b1' }],
+  ['path', { d: 'M3 5V19A9 3 0 0 0 13.318 21.968', key: '1lyu4j' }],
+  ['ellipse', { cx: '12', cy: '5', rx: '9', ry: '3', key: 'msslwz' }],
+])
 
 /** Color ramp for reasoning effort: cool/muted → hot/intense. */
 function getReasoningEffortBadgeClassName(effort: string): string {
@@ -67,6 +81,19 @@ function getReasoningEffortBadgeClassName(effort: string): string {
   }
 }
 
+function usageRequestedModelTitle(
+  log: UsageLog,
+  ultraHint: string,
+  filterHint: string,
+): string {
+  const actual = log.effective_model?.trim()
+  const parts: string[] = []
+  if (log.ultra) parts.push(ultraHint)
+  if (actual && actual !== log.model) parts.push(actual)
+  parts.push(filterHint)
+  return parts.join('\n')
+}
+
 function ReasoningEffortBadge({ effort }: { effort: string }) {
   const label = effort.trim()
   if (!label) return null
@@ -78,6 +105,74 @@ function ReasoningEffortBadge({ effort }: { effort: string }) {
     >
       {label}
     </Badge>
+  )
+}
+
+// ===== 上游响应模型审计（移植自 sub2api）=====
+// 变体归一化：剥掉 -latest 与日期后缀（-20250101 / -2025-01-01）后比较。
+// 归一化相等 → 「疑似变体」（琥珀）；否则 → 「模型不一致」（橙）。
+function normalizeModelVariant(model: string): string {
+  return model
+    .trim()
+    .toLowerCase()
+    .replace(/-latest$/, '')
+    .replace(/-\d{4}-\d{2}-\d{2}$/, '')
+    .replace(/-\d{8}$/, '')
+}
+
+function isLikelyModelVariant(sentModel: string, responseModel: string): boolean {
+  const sent = sentModel.trim()
+  const response = responseModel.trim()
+  return sent !== '' && response !== '' && normalizeModelVariant(sent) === normalizeModelVariant(response)
+}
+
+function UpstreamResponseModelBadge({
+  log,
+  sentModel,
+}: {
+  log: UsageLog
+  sentModel: string
+}) {
+  const { t } = useTranslation()
+  // 三态语义：mismatch 非真（未自报为 null/undefined）一律不显示。
+  if (log.upstream_model_mismatch !== true || !log.upstream_response_model) return null
+  const responseModel = log.upstream_response_model
+  const variant = isLikelyModelVariant(sentModel, responseModel)
+  const titleLines = [
+    `${t('usage.requestedModel')}: ${log.model || '-'}`,
+    `${t('usage.sentUpstreamModel')}: ${sentModel || '-'}`,
+    `${t('usage.upstreamResponseModel')}: ${responseModel}`,
+  ]
+  // Fast 档 + 模型不一致的组合提示：上游若同时降档（换便宜模型 + 降档），
+  // 仅看 Fast 徽章或仅看 mismatch 徽章都会漏掉组合情况。
+  if (isFastTier(log.billing_service_tier || log.service_tier)) {
+    titleLines.push(t('usage.modelMismatchFastTierHint'))
+  }
+  return (
+    <div
+      className="w-full break-all pl-3 text-[11px]"
+      title={titleLines.join('\n')}
+    >
+      <span className="mr-1 text-muted-foreground">↳ {t('usage.upstreamResponseModel')}:</span>
+      <span
+        className={
+          variant
+            ? 'font-medium text-amber-600 dark:text-amber-400'
+            : 'font-medium text-orange-600 dark:text-orange-400'
+        }
+      >
+        {responseModel}
+      </span>
+      <span
+        className={`ml-1 inline-flex rounded px-1 py-px text-[10px] font-medium ring-1 ring-inset ${
+          variant
+            ? 'bg-amber-500/10 text-amber-700 ring-amber-500/30 dark:bg-amber-500/15 dark:text-amber-300 dark:ring-amber-500/30'
+            : 'bg-orange-500/10 text-orange-700 ring-orange-500/30 dark:bg-orange-500/15 dark:text-orange-300 dark:ring-orange-500/30'
+        }`}
+      >
+        {variant ? t('usage.modelVariant') : t('usage.modelMismatch')}
+      </span>
+    </div>
   )
 }
 
@@ -354,7 +449,10 @@ function formatServiceTierLabel(t: ReturnType<typeof useTranslation>['t'], tier?
 
 function UsageCostCell({ log }: { log: UsageLog }) {
   const { t } = useTranslation()
-  if (log.user_billing_mode === 'per_image') return <ImageBillingCost count={log.billed_image_count} unitPrice={log.image_unit_price} userBilled={log.user_billed} accountBilled={log.account_billed} />
+  const mediaUnit = mediaBillingUnit(log.effective_model || log.model)
+  const mode = log.user_billing_mode || ''
+  if (mode === 'per_image' || mode === 'per_video' || mode === 'per_second') return <ImageBillingCost mode={mode} media={mediaUnit !== ''} count={log.billed_image_count} unitPrice={log.image_unit_price} userBilled={log.user_billed} accountBilled={log.account_billed} />
+  if (mediaUnit) return <MediaUsageCost log={log} unit={mediaUnit} />
   const accountBilled = safeNumber(log.account_billed)
   const userBilled = safeNumber(log.user_billed)
   const totalCost = safeNumber(log.total_cost)
@@ -464,6 +562,42 @@ function UsageCostCell({ log }: { log: UsageLog }) {
               valueClassName="text-orange-300"
             />
           )}
+        </div>
+      </TooltipContent>
+    </Tooltip>
+  )
+}
+
+// MediaUsageCost 是 Grok Imagine 媒体行(用户按上游成本计费)的价格列:展示计费单位
+// (张数 / 视频秒数)与上游成本;视频提交行在完成时才结算,成功但无单价的行标"未定价"。
+function MediaUsageCost({ log, unit }: { log: UsageLog; unit: MediaBillingUnit }) {
+  const { t } = useTranslation()
+  const accountBilled = safeNumber(log.account_billed)
+  const userBilled = safeNumber(log.user_billed)
+  const units = unit === 'second' ? safeNumber(log.video_seconds) : safeNumber(log.image_count)
+  if (log.status_code >= 400) {
+    return <span className={`${usageTableMonoClass} text-muted-foreground/50`}>-</span>
+  }
+  if (unit === 'second' && units <= 0) {
+    return <span className="text-[11px] text-muted-foreground">{t('usage.videoSettlesOnDone')}</span>
+  }
+  if (units > 0 && accountBilled <= 0) {
+    return <span className="inline-flex items-center gap-1 text-[11px] font-medium text-amber-600 dark:text-amber-400" title={t('usage.mediaUnpricedHint')}><AlertTriangle className="size-3.5" />{t('settings.pricing.mediaBilling.unpriced')}</span>
+  }
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button type="button" className="group inline-flex cursor-help items-center gap-1.5 rounded-md px-1.5 py-1 text-left transition-colors hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+          <span className="text-[13px] font-semibold leading-none tabular-nums text-emerald-600 antialiased dark:text-emerald-400">{formatUSD(userBilled > 0 ? userBilled : accountBilled)}</span>
+          <Info className="size-3.5 shrink-0 text-muted-foreground transition-colors group-hover:text-blue-500" />
+        </button>
+      </TooltipTrigger>
+      <TooltipContent side="right" sideOffset={8} className="w-72 max-w-none whitespace-nowrap rounded-lg border border-slate-700 bg-slate-950 px-3 py-2.5 text-xs text-slate-50 shadow-xl">
+        <div className="space-y-1.5">
+          <div className="mb-1 text-xs font-semibold text-slate-300">{t('usage.costDetails')}</div>
+          <CostTooltipRow label={t('usage.mediaBillingBasis')} value={t(unit === 'second' ? 'usage.mediaUnitsVideo' : 'usage.mediaUnitsImage', { count: units })} />
+          <CostTooltipRow label={t('usage.mediaUpstreamCostLabel')} value={formatUSD(accountBilled)} />
+          {units > 0 && <CostTooltipRow label={t('settings.pricing.mediaBilling.upstreamCost')} value={`${formatUSD(accountBilled / units)}${t(unit === 'second' ? 'settings.pricing.perSecondUnit' : 'settings.pricing.perImageUnit')}`} valueClassName="text-sky-300" />}
         </div>
       </TooltipContent>
     </Tooltip>
@@ -930,12 +1064,7 @@ function UserAgentCell({ log, mobile = false }: { log: UsageLog; mobile?: boolea
       ? t('usage.userAgentOverridden')
       : t('usage.userAgentPreserved')
 
-  // Turn State 注入/回带观测:有任一值就要把 trace 单元格渲染出来,否则运维看不到注入证据。
-  const injectedTurnState = (log.injected_turn_state ?? '').trim()
-  const upstreamTurnState = (log.upstream_turn_state ?? '').trim()
-  const hasTurnState = Boolean(injectedTurnState || upstreamTurnState)
-
-  if (!hasAudit && !log.request_id && !log.upstream_request_id && !hasTurnState) {
+  if (!hasAudit && !log.request_id && !log.upstream_request_id) {
     return (
       <div className="font-mono text-[11px] text-muted-foreground" title={t('usage.userAgentNotRecorded')}>
         UA: -
@@ -958,39 +1087,10 @@ function UserAgentCell({ log, mobile = false }: { log: UsageLog; mobile?: boolea
   // 客户端与上游 UA 完全一致且未改写:合成一行(C=U),两行会重复同一串字符串白占行高。
   const sameUA = !log.user_agent_overridden && Boolean(clientUserAgent) && clientUserAgent === upstreamUserAgent
 
-  // 单元格里只放一个 TS 小标记,完整值进 tooltip,避免撑宽列。
-  const turnStateChip = hasTurnState ? (
-    <span
-      className="ml-1.5 inline-flex shrink-0 items-center rounded bg-muted px-1 font-sans text-[9px] font-semibold uppercase tracking-wide text-muted-foreground/80"
-      title={[
-        injectedTurnState ? `${t('usage.injectedTurnState')}: ${injectedTurnState}` : '',
-        upstreamTurnState ? `${t('usage.upstreamTurnState')}: ${upstreamTurnState}` : '',
-      ].filter(Boolean).join('\n')}
-    >
-      TS
-    </span>
-  ) : null
-  const idLine = log.request_id || hasTurnState ? (
-    <div className="flex min-w-0 items-center text-muted-foreground" title={log.request_id ? `Request ID: ${log.request_id}` : undefined}>
-      {log.request_id ? <span className="min-w-0 truncate">ID: {log.request_id}</span> : null}
-      {turnStateChip}
+  const idLine = log.request_id ? (
+    <div className="min-w-0 truncate text-muted-foreground" title={`Request ID: ${log.request_id}`}>
+      ID: {log.request_id}
     </div>
-  ) : null
-  const turnStateRows = hasTurnState ? (
-    <>
-      {injectedTurnState ? (
-        <div className="flex items-start gap-2">
-          <div className="min-w-0 flex-1 break-all font-mono">{t('usage.injectedTurnState')}: {injectedTurnState}</div>
-          <button type="button" onClick={() => void navigator.clipboard?.writeText(injectedTurnState)} className="shrink-0 text-xs font-medium text-primary hover:underline">{t('common.copy')}</button>
-        </div>
-      ) : null}
-      {upstreamTurnState ? (
-        <div className="flex items-start gap-2">
-          <div className="min-w-0 flex-1 break-all font-mono">{t('usage.upstreamTurnState')}: {upstreamTurnState}</div>
-          <button type="button" onClick={() => void navigator.clipboard?.writeText(upstreamTurnState)} className="shrink-0 text-xs font-medium text-primary hover:underline">{t('common.copy')}</button>
-        </div>
-      ) : null}
-    </>
   ) : null
 
   const content = sameUA ? (
@@ -1041,7 +1141,6 @@ function UserAgentCell({ log, mobile = false }: { log: UsageLog; mobile?: boolea
           {log.request_id ? <div className="break-all font-mono">Request ID: {log.request_id}</div> : null}
           {log.upstream_request_id ? <div className="break-all font-mono">Upstream ID: {log.upstream_request_id}</div> : null}
           {log.upstream_proxy_name ? <div className="break-all">Proxy: {log.upstream_proxy_name}{log.upstream_proxy_id ? ` (#${log.upstream_proxy_id})` : ''}</div> : null}
-          {turnStateRows}
           <div className="font-semibold">{statusLabel}</div>
           {log.via_websocket ? (
             <div className="leading-relaxed text-background/70">{t('usage.userAgentWebSocketHint')}</div>
@@ -1231,7 +1330,7 @@ function UsageCacheBadges({ log, align = 'end' }: { log: UsageLog; align?: 'star
       )}
       {tokens.cacheWriteTokens > 0 && (
         <Badge variant="outline" title={writeTitle} aria-label={writeTitle} className={`${usageTableBadgeClass} gap-1 border-transparent bg-amber-500/10 text-amber-600 dark:bg-amber-500/20 dark:text-amber-400`}>
-          <DatabaseBackup className="size-3.5" aria-hidden="true" />
+          <DatabasePlus className="size-3.5" aria-hidden="true" />
           {formatTokens(tokens.cacheWriteTokens, true)}
         </Badge>
       )}
@@ -1605,6 +1704,9 @@ export default function Usage() {
   const [filterAccountLabel, setFilterAccountLabel] = useState('')
   const [filterFast, setFilterFast] = useState('')
   const [filterUltra, setFilterUltra] = useState('')
+  const [filterModelMismatch, setFilterModelMismatch] = useState(false)
+  // 关闭「显示上游模型不一致」后，筛选参数不再带上这项；ref 让筛选回调不用等设置加载完再重建。
+  const showUpstreamModelMismatchRef = useRef(true)
   const [filterType, setFilterType] = useState<UsageTypeFilter>('')
   const [filterErrorKind, setFilterErrorKind] = useState('')
   const [filterRetry, setFilterRetry] = useState<UsageRetryFilter>('')
@@ -1643,7 +1745,7 @@ export default function Usage() {
 
   const loadAPIKeys = useCallback(async () => {
     try {
-      const response = await api.getAPIKeys()
+      const response = await api.getAPIKeys({ view: 'lite' })
       setAPIKeys(response.keys ?? [])
       setAPIKeyLoadFailed(false)
     } catch {
@@ -1666,6 +1768,7 @@ export default function Usage() {
       accountId: filterAccountId || undefined,
       fast: filterFast || undefined,
       ultra: filterUltra || undefined,
+      upstreamModelMismatch: showUpstreamModelMismatchRef.current && filterModelMismatch ? 'true' : undefined,
       stream: filterType === 'stream' ? 'true' : filterType === 'sync' ? 'false' : undefined,
       compact: filterType === 'compact' ? 'true' : undefined,
       hasCompactionHistory: filterType === 'history' ? 'true' : undefined,
@@ -1673,7 +1776,7 @@ export default function Usage() {
       retry: filterRetry || undefined,
       viaWebsocket: filterTransport === 'ws' ? 'true' : filterTransport === 'http' ? 'false' : undefined,
     }
-  }, [timeRange, customRange, searchQuery, filterModel, filterEndpoint, filterApiKeyId, filterAccountId, filterFast, filterUltra, filterType, channel, filterRetry, filterTransport])
+  }, [timeRange, customRange, searchQuery, filterModel, filterEndpoint, filterApiKeyId, filterAccountId, filterFast, filterUltra, filterModelMismatch, filterType, channel, filterRetry, filterTransport])
 
   const buildLogFilterParams = useCallback(() => {
     return {
@@ -1685,13 +1788,20 @@ export default function Usage() {
   }, [buildDimensionFilterParams, filterStatus, filterErrorKind])
 
   // 选中某个账号(或密钥/模型/搜索)后,卡片只统计命中的请求;累计字段始终全局。
+  // 若 loadStats 依赖 buildDimensionFilterParams,则每次筛选变化都会让 useDataLoader
+  // 以非静默方式自动重跑,把整页换成骨架屏、卸载搜索框并丢失焦点,表现为"每输入一个字都像刷新页面"。
+  // 因此 loadStats 保持稳定引用(从 ref 读取最新筛选),首次加载仍走全页骨架屏,
+  // 后续筛选变化由下方 useEffect 用 reloadSilently 原地静默刷新,搜索框焦点不丢失。
+  const statsFilterParamsRef = useRef(buildDimensionFilterParams)
+  statsFilterParamsRef.current = buildDimensionFilterParams
+
   const loadStats = useCallback(async () => {
     const [stats, settings] = await Promise.all([
-      api.getUsageStats(buildDimensionFilterParams()),
+      api.getUsageStats(statsFilterParamsRef.current()),
       api.getSettings().catch((): SystemSettings | null => null),
     ])
     return { stats, settings }
-  }, [buildDimensionFilterParams])
+  }, [])
 
   const { data, loading, error, reload, reloadSilently } = useDataLoader<{
     stats: UsageStats | null
@@ -1700,6 +1810,17 @@ export default function Usage() {
     initialData: { stats: null, settings: null },
     load: loadStats,
   })
+
+  // 维度筛选(时间范围/账号/密钥/模型/端点/搜索/形态)变化时,静默原地刷新统计卡片:
+  // 保留页面与搜索框焦点,避免整页骨架屏闪烁;首次加载已由 useDataLoader 全页骨架屏承担。
+  const statsFiltersFirstRunRef = useRef(true)
+  useEffect(() => {
+    if (statsFiltersFirstRunRef.current) {
+      statsFiltersFirstRunRef.current = false
+      return
+    }
+    void reloadSilently()
+  }, [buildDimensionFilterParams, reloadSilently])
 
   // 服务端分页加载日志
   const loadLogs = useCallback(async () => {
@@ -1789,6 +1910,15 @@ export default function Usage() {
 
   const { stats, settings } = data
   const showFullUsageNumbers = settings?.show_full_usage_numbers ?? false
+  const showUpstreamModelMismatch = settings?.show_upstream_model_mismatch !== false
+  showUpstreamModelMismatchRef.current = showUpstreamModelMismatch
+
+  useEffect(() => {
+    if (!showUpstreamModelMismatch && filterModelMismatch) {
+      setFilterModelMismatch(false)
+      setPage(1)
+    }
+  }, [showUpstreamModelMismatch, filterModelMismatch])
   const totalPages = Math.max(1, Math.ceil(logsTotal / pageSize))
   const currentPage = Math.min(page, totalPages)
 
@@ -1859,6 +1989,7 @@ export default function Usage() {
     filterType,
     filterFast,
     filterUltra,
+    showUpstreamModelMismatch && filterModelMismatch ? 'true' : '',
     filterErrorKind,
     filterRetry,
     filterTransport,
@@ -1873,6 +2004,7 @@ export default function Usage() {
     || filterType
     || filterFast
     || filterUltra
+    || (showUpstreamModelMismatch && filterModelMismatch)
     || filterErrorKind
     || filterRetry
     || filterTransport,
@@ -1913,6 +2045,7 @@ export default function Usage() {
     setFilterType('')
     setFilterFast('')
     setFilterUltra('')
+    setFilterModelMismatch(false)
     setFilterErrorKind('')
     setFilterRetry('')
     setFilterTransport('')
@@ -2448,6 +2581,22 @@ export default function Usage() {
                     <Sparkles className="size-3.5" />
                     Ultra
                   </button>
+                  {showUpstreamModelMismatch ? (
+                    <button
+                      type="button"
+                      title={t('usage.filterModelMismatchHint')}
+                      onClick={() => { setFilterModelMismatch(!filterModelMismatch); setPage(1) }}
+                      className={cn(
+                        'inline-flex h-8 min-w-0 flex-1 items-center justify-center gap-1 rounded-lg border px-2.5 text-[13px] font-medium transition-colors',
+                        filterModelMismatch
+                          ? 'border-orange-500/40 bg-orange-500/12 text-orange-600 dark:bg-orange-500/20 dark:text-orange-300'
+                          : 'border-border bg-background text-muted-foreground hover:bg-muted/50 hover:text-foreground',
+                      )}
+                    >
+                      <AlertTriangle className="size-3.5" />
+                      {t('usage.filterModelMismatch')}
+                    </button>
+                  ) : null}
                   </div>
                 </div>
               ) : null}
@@ -2498,7 +2647,11 @@ export default function Usage() {
                               className={`${usageTableBadgeClass} ${usageClickableFilterClass} ${log.ultra ? 'usage-ultra-model' : ''} ${filterModel === log.model ? 'border-primary/50 text-primary' : ''}`}
                               role="button"
                               tabIndex={0}
-                              title={`${log.ultra ? `${t('usage.ultraModeHint')} · ` : ''}${t('usage.filterByModelHint', { model: log.model || '-' })}`}
+                              title={usageRequestedModelTitle(
+                                log,
+                                t('usage.ultraModeHint'),
+                                t('usage.filterByModelHint', { model: log.model || '-' }),
+                              )}
                               onClick={() => toggleModelFilter(log.model)}
                               onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleModelFilter(log.model) } }}
                             >
@@ -2526,11 +2679,15 @@ export default function Usage() {
                             </Badge>
                           ) : null}
                           {visibleColumns.type && <StreamBadge stream={log.stream} />}
+                          {visibleColumns.type && <UsageDaybreakBadge program={log.daybreak_program} />}
                           <CompactionBadges
                             compact={log.compact}
                             hasCompactionHistory={log.has_compaction_history}
                           />
                           <InternalRequestBadge log={log} />
+                          {showUpstreamModelMismatch && log.upstream_model_mismatch === true && log.upstream_response_model && (
+                            <UpstreamResponseModelBadge log={log} sentModel={log.effective_model || log.model} />
+                          )}
                         </div>
                         {visibleColumns.time && (
                           <div className="shrink-0 whitespace-nowrap text-right text-[11px] tabular-nums text-muted-foreground">
@@ -2727,7 +2884,11 @@ export default function Usage() {
                               className={`${usageTableBadgeClass} ${usageClickableFilterClass} ${log.ultra ? 'usage-ultra-model' : ''} ${filterModel === log.model ? 'border-primary/50 text-primary' : ''}`}
                               role="button"
                               tabIndex={0}
-                              title={`${log.ultra ? `${t('usage.ultraModeHint')} · ` : ''}${t('usage.filterByModelHint', { model: log.model || '-' })}`}
+                              title={usageRequestedModelTitle(
+                                log,
+                                t('usage.ultraModeHint'),
+                                t('usage.filterByModelHint', { model: log.model || '-' }),
+                              )}
                               onClick={() => toggleModelFilter(log.model)}
                               onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleModelFilter(log.model) } }}
                             >
@@ -2741,11 +2902,6 @@ export default function Usage() {
                               )}
                               {log.model || '-'}
                             </Badge>
-                            {log.effective_model && log.effective_model !== log.model && (
-                              <Badge variant="outline" className="text-[11px] font-medium border-transparent bg-blue-500/10 text-blue-600 dark:bg-blue-500/20 dark:text-blue-400">
-                                → {log.effective_model}
-                              </Badge>
-                            )}
                             {log.reasoning_effort ? (
                               <ReasoningEffortBadge effort={log.reasoning_effort} />
                             ) : null}
@@ -2761,6 +2917,9 @@ export default function Usage() {
                                 <Zap className="size-3" />
                                 {formatServiceTierLabel(t, log.billing_service_tier || log.service_tier)}
                               </Badge>
+                            )}
+                            {showUpstreamModelMismatch && log.upstream_model_mismatch === true && log.upstream_response_model && (
+                              <UpstreamResponseModelBadge log={log} sentModel={log.effective_model || log.model} />
                             )}
                           </div>
                         </TableCell>}
@@ -2807,8 +2966,9 @@ export default function Usage() {
                           </div>
                         </TableCell>}
                         {visibleColumns.type && <TableCell>
-                          <div className="flex flex-wrap items-center gap-1.5">
+                          <div className="flex flex-col items-start gap-1.5">
                             <StreamBadge stream={log.stream} />
+                            <UsageDaybreakBadge program={log.daybreak_program} />
                             <CompactionBadges
                               compact={log.compact}
                               hasCompactionHistory={log.has_compaction_history}

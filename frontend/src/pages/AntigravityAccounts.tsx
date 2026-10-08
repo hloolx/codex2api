@@ -12,6 +12,7 @@ import {
   FolderOpen,
   KeyRound,
   Link2,
+  ListChecks,
   Loader2,
   Pencil,
   Plus,
@@ -53,6 +54,7 @@ import AccountGroupFilterSelect, {
   type AccountGroupFilterValue,
 } from "../components/AccountGroupFilterSelect";
 import AccountGroupMultiSelect from "../components/AccountGroupMultiSelect";
+import BatchAccountGroupModal from "../components/BatchAccountGroupModal";
 import AccountProxyBadge from "../components/AccountProxyBadge";
 import AccountProxyQuickEditor from "../components/AccountProxyQuickEditor";
 import {
@@ -61,6 +63,7 @@ import {
 } from "../lib/accountProxyBinding";
 import ChannelLogo from "../components/ChannelLogo";
 import ColumnSettingsMenu from "../components/ColumnSettingsMenu";
+import ModelLogo from "../components/ModelLogo";
 import { CompactStat } from "../components/CompactStat";
 import Modal from "../components/Modal";
 import TestConnectionModal from "../components/TestConnectionModal";
@@ -748,6 +751,7 @@ function QuotaDetail({ account }: { account: AccountRow }) {
                 >
                   <div className="min-w-0">
                     <div className="flex min-w-0 items-center gap-2">
+                      <ModelLogo model={model} size={18} variant="plain" />
                       <span className="truncate text-sm font-semibold text-foreground">
                         {quotaDisplayName(model, info)}
                       </span>
@@ -951,6 +955,9 @@ function AntigravityAccounts({ headerSlot }: { headerSlot?: ReactNode } = {}) {
     [allGroups],
   );
   const [serverSummary, setServerSummary] = useState<AccountListSummary | null>(null);
+  const [selected, setSelected] = useState<Set<number>>(() => new Set());
+  const [batchBusy, setBatchBusy] = useState(false);
+  const [batchGroupOpen, setBatchGroupOpen] = useState(false);
   const [totalAccounts, setTotalAccounts] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -1215,6 +1222,40 @@ function AntigravityAccounts({ headerSlot }: { headerSlot?: ReactNode } = {}) {
   useEffect(() => {
     setPage(1);
   }, [groupFilter, statusFilter]);
+
+  // 批量选择(issue #763):与 Claude 页一致,勾选跨页保留,"全选"只作用于当前页。
+  const selectedIds = useMemo(() => Array.from(selected), [selected]);
+  const allPageSelected =
+    accounts.length > 0 && accounts.every((account) => selected.has(account.id));
+  const toggleSelect = useCallback((id: number) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+  const toggleSelectAll = useCallback(() => {
+    setSelected((prev) => {
+      if (accounts.every((account) => prev.has(account.id))) return new Set();
+      return new Set(accounts.map((account) => account.id));
+    });
+  }, [accounts]);
+  const clearSelection = useCallback(() => setSelected(new Set()), []);
+
+  const handleBatchEnabled = async (enabled: boolean) => {
+    if (selectedIds.length === 0) return;
+    setBatchBusy(true);
+    try {
+      await api.batchUpdateAccounts({ ids: selectedIds, enabled });
+      clearSelection();
+      await reload();
+    } catch (batchError) {
+      showToast(getErrorMessage(batchError), "error");
+    } finally {
+      setBatchBusy(false);
+    }
+  };
 
   const stopOAuthPolling = useCallback(() => {
     oauthPollGenerationRef.current += 1;
@@ -2034,6 +2075,37 @@ function AntigravityAccounts({ headerSlot }: { headerSlot?: ReactNode } = {}) {
         ) : null}
       </div>
 
+      {selectedIds.length > 0 ? (
+        <div className="sticky top-2 z-20 mb-4 flex items-center justify-between gap-3 rounded-xl border border-primary/20 bg-card/95 px-3 py-2 text-sm shadow-lg backdrop-blur-sm max-lg:flex-col max-lg:items-stretch">
+          <span className="font-semibold text-primary">
+            {t("common.selected", { count: selectedIds.length })}
+          </span>
+          <div className="flex flex-wrap items-center justify-end gap-1.5 max-lg:justify-start">
+            {!allPageSelected ? (
+              <Button variant="outline" size="sm" disabled={batchBusy} onClick={toggleSelectAll}>
+                <ListChecks className="size-3.5" />
+                <span>{t("accounts.selectCurrentPage")}</span>
+              </Button>
+            ) : null}
+            <Button variant="outline" size="sm" disabled={batchBusy} onClick={() => setBatchGroupOpen(true)}>
+              <FolderOpen className="size-3.5" />
+              <span className="hidden sm:inline">{t("accounts.batchGroupEdit")}</span>
+            </Button>
+            <Button variant="outline" size="sm" disabled={batchBusy} onClick={() => void handleBatchEnabled(true)}>
+              <Power className="size-3.5" />
+              <span className="hidden sm:inline">{t("accounts.enable")}</span>
+            </Button>
+            <Button variant="outline" size="sm" disabled={batchBusy} onClick={() => void handleBatchEnabled(false)}>
+              <PowerOff className="size-3.5" />
+              <span className="hidden sm:inline">{t("accounts.disable")}</span>
+            </Button>
+            <Button variant="ghost" size="sm" disabled={batchBusy} onClick={clearSelection}>
+              {t("accounts.cancelSelection")}
+            </Button>
+          </div>
+        </div>
+      ) : null}
+
       <StateShell
         variant="page"
         loading={loading && accounts.length === 0}
@@ -2072,6 +2144,15 @@ function AntigravityAccounts({ headerSlot }: { headerSlot?: ReactNode } = {}) {
           <Table className="[&_td]:px-2.5 [&_th]:px-2.5 [&_td]:py-3">
             <TableHeader>
               <TableRow>
+                <TableHead className="w-10">
+                  <input
+                    type="checkbox"
+                    className="size-4 cursor-pointer accent-primary"
+                    checked={allPageSelected}
+                    onChange={toggleSelectAll}
+                    aria-label={t("accounts.selectAll")}
+                  />
+                </TableHead>
                 <TableHead className="text-[13px] font-semibold">{t("antigravity.columnAccount")}</TableHead>
                 {visibleColumns.project ? (
                   <TableHead className="text-[13px] font-semibold">{t("antigravity.columnProject")}</TableHead>
@@ -2108,6 +2189,15 @@ function AntigravityAccounts({ headerSlot }: { headerSlot?: ReactNode } = {}) {
                     openDetailAccount(account.id);
                   }}
                 >
+                  <TableCell className="w-10">
+                    <input
+                      type="checkbox"
+                      className="size-4 cursor-pointer accent-primary"
+                      checked={selected.has(account.id)}
+                      onChange={() => toggleSelect(account.id)}
+                      aria-label={account.name || account.email || `#${account.id}`}
+                    />
+                  </TableCell>
                   <TableCell className="min-w-[220px]">
                     <div className="flex min-w-0 items-center gap-2.5">
                       <AccountAvatar account={account} size={32} />
@@ -2222,6 +2312,13 @@ function AntigravityAccounts({ headerSlot }: { headerSlot?: ReactNode } = {}) {
               )}
             >
               <div className="flex items-start gap-3">
+                <input
+                  type="checkbox"
+                  className="mt-3 size-4 shrink-0 cursor-pointer accent-primary"
+                  checked={selected.has(account.id)}
+                  onChange={() => toggleSelect(account.id)}
+                  aria-label={account.name || account.email || `#${account.id}`}
+                />
                 <button
                   type="button"
                   className="flex min-w-0 flex-1 items-start gap-3 text-left"
@@ -2991,6 +3088,20 @@ function AntigravityAccounts({ headerSlot }: { headerSlot?: ReactNode } = {}) {
       </Modal>
 
       {/* 代理徽章直达的快速绑定弹窗：与 Codex / Grok 账号页共用组件 */}
+      <BatchAccountGroupModal
+        show={batchGroupOpen}
+        ids={selectedIds}
+        channel="antigravity"
+        groups={antigravityGroups}
+        onClose={() => setBatchGroupOpen(false)}
+        onSaved={async () => {
+          setBatchGroupOpen(false);
+          clearSelection();
+          await Promise.all([reload(), reloadGroups()]);
+        }}
+        onGroupsChanged={reloadGroups}
+      />
+
       <AccountProxyQuickEditor
         account={quickProxyAccount}
         accountLabel={

@@ -177,9 +177,10 @@ func parseGrokReasoningEfforts(value gjson.Result) []GrokReasoningEffortOption {
 			option.ID = strings.TrimSpace(entry.String())
 			option.Label = option.ID
 		} else if entry.IsObject() {
-			option.ID = strings.TrimSpace(entry.Get("id").String())
+			// grok-build 的线协议档位在 value 上；id 只是展示键，两者不一致时以 value 为准。
+			option.ID = strings.TrimSpace(entry.Get("value").String())
 			if option.ID == "" {
-				option.ID = strings.TrimSpace(entry.Get("value").String())
+				option.ID = strings.TrimSpace(entry.Get("id").String())
 			}
 			option.Label = strings.TrimSpace(entry.Get("label").String())
 			option.Description = strings.TrimSpace(entry.Get("description").String())
@@ -196,7 +197,7 @@ var blockedGrokModelHeaders = map[string]struct{}{
 	"authorization": {}, "proxy-authorization": {}, "cookie": {}, "set-cookie": {},
 	"x-api-key": {}, "x-xai-token-auth": {}, "x-authenticateresponse": {},
 	"x-userid": {}, "x-grok-user-id": {}, "x-grok-agent-id": {},
-	"x-grok-session-id": {}, "x-grok-conv-id": {}, "x-grok-req-id": {},
+	"x-grok-session-id": {}, "x-grok-conv-id": {}, "x-grok-conv-group-id": {}, "x-grok-req-id": {},
 	"host": {}, "content-length": {}, "transfer-encoding": {}, "connection": {},
 	"upgrade": {}, "accept-encoding": {},
 }
@@ -384,6 +385,8 @@ func FetchGrokModelCatalog(ctx context.Context, account *auth.Account, proxyURL,
 	if baseURL == "" || bearer == "" {
 		return result, fmt.Errorf("Grok 账号缺少可用凭据")
 	}
+	ctx, finish := grokReadContext(ctx, account.ID(), "models")
+	defer func() { finish(result.StatusCode) }()
 	endpoint := auth.OpenAIResponsesEndpoint(baseURL, "/v1/models")
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
@@ -453,11 +456,19 @@ func grokCatalogToRoutingModels(models []GrokModelCatalogItem) []auth.GrokModelR
 			}
 		}
 		hidden := model.Hidden != nil && *model.Hidden
+		efforts := make([]string, 0, len(model.ReasoningEfforts))
+		for _, option := range model.ReasoningEfforts {
+			if option.ID != "" {
+				efforts = append(efforts, option.ID)
+			}
+		}
 		result = append(result, auth.GrokModelRoute{
 			ModelID: model.ID, BaseURL: model.BaseURL, APIBaseURL: model.APIBaseURL,
 			APIBackend: model.APIBackend, ExtraHeaders: extra, SupportedInAPI: model.SupportedInAPI,
 			Hidden: hidden, ContextWindow: model.ContextWindow, MaxCompletionTokens: model.MaxCompletionTokens,
 			SupportsReasoningEffort: model.SupportsReasoningEffort != nil && *model.SupportsReasoningEffort,
+			ReasoningEffort:         model.ReasoningEffort,
+			ReasoningEfforts:        auth.NormalizeGrokReasoningMenu(efforts),
 			SupportsBackendSearch:   model.SupportsBackendSearch != nil && *model.SupportsBackendSearch,
 			StreamToolCalls:         model.StreamToolCalls != nil && *model.StreamToolCalls,
 			FirstSeenAt:             model.FirstSeenAt,

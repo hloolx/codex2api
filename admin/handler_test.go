@@ -2678,6 +2678,58 @@ func TestUpdateAccountSchedulerPersistsQuotaAutoPauseConfig(t *testing.T) {
 	}
 }
 
+func TestUpdateAccountSchedulerPersistsKeepConcurrencyOnDegrade(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	db := newTestAdminDB(t)
+	accountID := insertTestAccount(t, db)
+	runtimeAccount := &auth.Account{
+		DBID:               accountID,
+		AccessToken:        "token",
+		Status:             auth.StatusReady,
+		PlanType:           "pro",
+		LastUnauthorizedAt: time.Now(),
+	}
+	store := &auth.Store{}
+	store.AddAccount(runtimeAccount)
+	handler := &Handler{db: db, store: store}
+
+	patch := func(body string) *httptest.ResponseRecorder {
+		recorder := httptest.NewRecorder()
+		ctx, _ := gin.CreateTestContext(recorder)
+		ctx.Params = gin.Params{{Key: "id", Value: fmt.Sprintf("%d", accountID)}}
+		ctx.Request = httptest.NewRequest(http.MethodPatch, fmt.Sprintf("/api/admin/accounts/%d/scheduler", accountID), strings.NewReader(body))
+		ctx.Request.Header.Set("Content-Type", "application/json")
+		handler.UpdateAccountScheduler(ctx)
+		return recorder
+	}
+
+	if recorder := patch(`{"keep_concurrency_on_degrade":"yes"}`); recorder.Code != http.StatusBadRequest {
+		t.Fatalf("invalid value status = %d, want %d", recorder.Code, http.StatusBadRequest)
+	}
+
+	if recorder := patch(`{"base_concurrency_override":5,"keep_concurrency_on_degrade":true}`); recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusOK)
+	}
+	rows, err := db.ListActive(context.Background())
+	if err != nil {
+		t.Fatalf("ListActive: %v", err)
+	}
+	if !rows[0].GetCredentialBool(auth.KeepConcurrencyOnDegradeCredentialKey) {
+		t.Fatal("keep_concurrency_on_degrade = false, want true")
+	}
+	if got := runtimeAccount.GetDynamicConcurrencyLimit(); got != 5 {
+		t.Fatalf("runtime risky limit = %d, want 5", got)
+	}
+
+	if recorder := patch(`{"keep_concurrency_on_degrade":false}`); recorder.Code != http.StatusOK {
+		t.Fatalf("disable status = %d, want %d", recorder.Code, http.StatusOK)
+	}
+	if got := runtimeAccount.GetDynamicConcurrencyLimit(); got != 1 {
+		t.Fatalf("runtime risky limit after disable = %d, want 1", got)
+	}
+}
+
 func TestUpdateAccountSchedulerResetsToAutoOnNull(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -3184,6 +3236,56 @@ func TestBatchUpdateAccountsPersistsMetadataAndSyncsRuntime(t *testing.T) {
 		}
 		if priority := account.GetSchedulerPriority(); priority != 0 {
 			t.Fatalf("runtime account %d scheduler priority after reset = %d, want 0", account.ID(), priority)
+		}
+	}
+}
+
+func TestBatchUpdateAccountsAppliesKeepConcurrencyOnDegrade(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	db := newTestAdminDB(t)
+	ctx := context.Background()
+	accountID1, err := db.InsertAccount(ctx, "keep-1", "rt_keep_1", "")
+	if err != nil {
+		t.Fatalf("InsertAccount 1: %v", err)
+	}
+	accountID2, err := db.InsertAccount(ctx, "keep-2", "rt_keep_2", "")
+	if err != nil {
+		t.Fatalf("InsertAccount 2: %v", err)
+	}
+	newRisky := func(id int64) *auth.Account {
+		return &auth.Account{DBID: id, AccessToken: "token", Status: auth.StatusReady, PlanType: "pro", LastUnauthorizedAt: time.Now()}
+	}
+	runtimeAccount1 := newRisky(accountID1)
+	runtimeAccount2 := newRisky(accountID2)
+	store := auth.NewStore(nil, nil, nil)
+	store.AddAccount(runtimeAccount1)
+	store.AddAccount(runtimeAccount2)
+	handler := &Handler{db: db, store: store}
+
+	body := fmt.Sprintf(`{"ids":[%d,%d],"base_concurrency_override":3,"keep_concurrency_on_degrade":true}`, accountID1, accountID2)
+	recorder := httptest.NewRecorder()
+	ginCtx, _ := gin.CreateTestContext(recorder)
+	ginCtx.Request = httptest.NewRequest(http.MethodPost, "/api/admin/accounts/batch-update", strings.NewReader(body))
+	ginCtx.Request.Header.Set("Content-Type", "application/json")
+
+	handler.BatchUpdateAccounts(ginCtx)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body=%s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	rows, err := db.ListActive(ctx)
+	if err != nil {
+		t.Fatalf("ListActive: %v", err)
+	}
+	for _, row := range rows {
+		if !row.GetCredentialBool(auth.KeepConcurrencyOnDegradeCredentialKey) {
+			t.Fatalf("account %d keep_concurrency_on_degrade = false, want true", row.ID)
+		}
+	}
+	for _, acc := range []*auth.Account{runtimeAccount1, runtimeAccount2} {
+		if got := acc.GetDynamicConcurrencyLimit(); got != 3 {
+			t.Fatalf("account %d runtime risky limit = %d, want 3", acc.DBID, got)
 		}
 	}
 }

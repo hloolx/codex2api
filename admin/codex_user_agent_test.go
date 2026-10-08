@@ -56,10 +56,10 @@ func TestPreviewCodexUserAgentUsesFormValues(t *testing.T) {
 	if err := json.Unmarshal(recorder.Body.Bytes(), &preview); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if preview.Persona == nil || preview.Persona.Version != "0.153.0" {
-		t.Fatalf("auto mode floor from the form should raise 0.152.0 to the 0.153.0 pair, got %+v", preview.Persona)
+	if preview.Persona == nil || preview.Persona.Version != "0.152.0" {
+		t.Fatalf("manual CLI override should retain 0.152.0, got %+v", preview.Persona)
 	}
-	if !strings.HasSuffix(preview.Persona.UserAgent, "(Codex Desktop; 26.901.22334)") || preview.Persona.Originator != "Codex Desktop" {
+	if !strings.HasSuffix(preview.Persona.UserAgent, "(Codex Desktop; 26.901.51231)") || preview.Persona.Originator != "Codex Desktop" {
 		t.Fatalf("persona = %+v", preview.Persona)
 	}
 

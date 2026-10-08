@@ -26,6 +26,7 @@ import { cacheUtilizationPercent, formatIECBytes } from '../lib/responseCacheMet
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { cn } from '@/lib/utils'
+import { getTimezone } from '../utils/time'
 
 type MetricTone = 'normal' | 'warning' | 'danger' | 'info'
 
@@ -718,6 +719,7 @@ function formatTimeLabel(iso: string): string {
   }
   return date.toLocaleTimeString('zh-CN', {
     hour12: false,
+    timeZone: getTimezone(),
   })
 }
 

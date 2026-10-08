@@ -78,42 +78,46 @@ type ImageGenerationJobInput struct {
 }
 
 type ImageAsset struct {
-	ID            int64     `json:"id"`
-	JobID         int64     `json:"job_id"`
-	TemplateID    int64     `json:"template_id"`
-	Filename      string    `json:"filename"`
-	StoragePath   string    `json:"-"`
-	ProxyURL      string    `json:"proxy_url,omitempty"`
-	ThumbnailURL  string    `json:"thumbnail_url,omitempty"`
-	MimeType      string    `json:"mime_type"`
-	Bytes         int       `json:"bytes"`
-	Width         int       `json:"width"`
-	Height        int       `json:"height"`
-	Model         string    `json:"model"`
-	RequestedSize string    `json:"requested_size"`
-	ActualSize    string    `json:"actual_size"`
-	Quality       string    `json:"quality"`
-	OutputFormat  string    `json:"output_format"`
-	RevisedPrompt string    `json:"revised_prompt"`
-	CreatedAt     time.Time `json:"created_at"`
-	CacheB64JSON  string    `json:"cache_b64_json,omitempty"`
+	ID              int64     `json:"id"`
+	JobID           int64     `json:"job_id"`
+	TemplateID      int64     `json:"template_id"`
+	Filename        string    `json:"filename"`
+	StoragePath     string    `json:"-"`
+	ProxyURL        string    `json:"proxy_url,omitempty"`
+	ThumbnailURL    string    `json:"thumbnail_url,omitempty"`
+	MimeType        string    `json:"mime_type"`
+	Bytes           int       `json:"bytes"`
+	Width           int       `json:"width"`
+	Height          int       `json:"height"`
+	Model           string    `json:"model"`
+	RequestedSize   string    `json:"requested_size"`
+	ActualSize      string    `json:"actual_size"`
+	Quality         string    `json:"quality"`
+	OutputFormat    string    `json:"output_format"`
+	RevisedPrompt   string    `json:"revised_prompt"`
+	CreatedAt       time.Time `json:"created_at"`
+	CacheB64JSON    string    `json:"cache_b64_json,omitempty"`
+	ExpiresAt       int64     `json:"expires_at,omitempty"`
+	DeleteAfterRead bool      `json:"delete_after_read,omitempty"`
 }
 
 type ImageAssetInput struct {
-	JobID         int64
-	TemplateID    int64
-	Filename      string
-	StoragePath   string
-	MimeType      string
-	Bytes         int
-	Width         int
-	Height        int
-	Model         string
-	RequestedSize string
-	ActualSize    string
-	Quality       string
-	OutputFormat  string
-	RevisedPrompt string
+	ExpiresAt       int64
+	DeleteAfterRead bool
+	JobID           int64
+	TemplateID      int64
+	Filename        string
+	StoragePath     string
+	MimeType        string
+	Bytes           int
+	Width           int
+	Height          int
+	Model           string
+	RequestedSize   string
+	ActualSize      string
+	Quality         string
+	OutputFormat    string
+	RevisedPrompt   string
 }
 
 type ImageAssetPage struct {
@@ -511,14 +515,14 @@ func (db *DB) InsertImageAsset(ctx context.Context, input ImageAssetInput) (int6
 	return db.insertRowID(ctx,
 		`INSERT INTO image_assets (
 			job_id, template_id, filename, storage_path, mime_type, bytes, width, height,
-			model, requested_size, actual_size, quality, output_format, revised_prompt
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING id`,
+			model, requested_size, actual_size, quality, output_format, revised_prompt, expires_at, delete_after_read
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) RETURNING id`,
 		`INSERT INTO image_assets (
 			job_id, template_id, filename, storage_path, mime_type, bytes, width, height,
-			model, requested_size, actual_size, quality, output_format, revised_prompt
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+			model, requested_size, actual_size, quality, output_format, revised_prompt, expires_at, delete_after_read
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
 		input.JobID, input.TemplateID, input.Filename, input.StoragePath, input.MimeType, input.Bytes, input.Width, input.Height,
-		input.Model, input.RequestedSize, input.ActualSize, input.Quality, input.OutputFormat, input.RevisedPrompt,
+		input.Model, input.RequestedSize, input.ActualSize, input.Quality, input.OutputFormat, input.RevisedPrompt, input.ExpiresAt, input.DeleteAfterRead,
 	)
 }
 
@@ -640,7 +644,7 @@ func imageAssetSelectSQL(tableAlias string) string {
 		from = "image_assets " + alias
 	}
 	return `SELECT ` + prefix + `id, ` + prefix + `job_id, ` + prefix + `template_id, ` + prefix + `filename, ` + prefix + `storage_path, ` + prefix + `mime_type, ` + prefix + `bytes, ` + prefix + `width, ` + prefix + `height,
-		` + prefix + `model, ` + prefix + `requested_size, ` + prefix + `actual_size, ` + prefix + `quality, ` + prefix + `output_format, ` + prefix + `revised_prompt, ` + prefix + `created_at
+		` + prefix + `model, ` + prefix + `requested_size, ` + prefix + `actual_size, ` + prefix + `quality, ` + prefix + `output_format, ` + prefix + `revised_prompt, ` + prefix + `created_at, ` + prefix + `expires_at, ` + prefix + `delete_after_read
 		FROM ` + from
 }
 
@@ -664,7 +668,7 @@ func scanImageAsset(scanner interface {
 	if err := scanner.Scan(
 		&asset.ID, &asset.JobID, &asset.TemplateID, &asset.Filename, &asset.StoragePath, &asset.MimeType,
 		&asset.Bytes, &asset.Width, &asset.Height, &asset.Model, &asset.RequestedSize, &asset.ActualSize,
-		&asset.Quality, &asset.OutputFormat, &asset.RevisedPrompt, &createdRaw,
+		&asset.Quality, &asset.OutputFormat, &asset.RevisedPrompt, &createdRaw, &asset.ExpiresAt, &asset.DeleteAfterRead,
 	); err != nil {
 		return nil, err
 	}

@@ -1600,10 +1600,16 @@ func dropBareReasoningInputValue(value any) (any, bool, bool) {
 			// Codex reasoning schema 不认 status 字段（400 unknown_parameter），
 			// 自家输出也从不携带；跨渠道会话中客户端可能裸回灌带 status 的
 			// 外渠道 reasoning 输出（issue #565）。
-			if _, has := v["status"]; has {
-				delete(v, "status")
-				return v, true, true
+			changed := false
+			// Responses accepts encrypted reasoning and summary; display-only
+			// content is not accepted when replayed as input.
+			for _, field := range []string{"status", "content"} {
+				if _, has := v[field]; has {
+					delete(v, field)
+					changed = true
+				}
 			}
+			return v, changed, true
 		}
 		return v, false, true
 	default:
@@ -1748,6 +1754,9 @@ func TranslateRequest(rawJSON []byte) ([]byte, error) {
 		return nil, err
 	}
 	out := buildChatResponsesRequest(req)
+	if access := gjson.GetBytes(rawJSON, "access_programs"); access.Exists() {
+		out["access_programs"] = json.RawMessage(access.Raw)
+	}
 	// 工具名净化映射从净化历史前的解析结果推导，与响应侧 ChatToolNameRestoreMap
 	// 使用同一份输入，保证去重后缀两边一致。
 	applyCodexToolNameMap(out, buildCodexToolNameMap(collectChatToolNames(parsed)))
@@ -3153,8 +3162,10 @@ func billingServiceTierCostRank(tier string) (int, bool) {
 		return 0, true
 	case "", "default", "standard", "auto", "scale":
 		return 1, true
-	case "priority", "ultrafast":
+	case "priority":
 		return 2, true
+	case "ultrafast":
+		return 3, true
 	default:
 		return 1, false
 	}
@@ -3651,8 +3662,100 @@ func alignRequiredWithProperties(schema map[string]interface{}) {
 		} else {
 			schema["required"] = required
 		}
+	} else {
+		pruneRequiredWithoutProperties(schema)
 	}
 	forEachSubSchema(schema, alignRequiredWithProperties)
+}
+
+// schemaCompositionKeys 是可能替同级 required 提供字段的组合关键字。allOf 的分支
+// 必定生效，anyOf/oneOf/then/else 只在部分实例上生效，但它们声明的字段名同样属于
+// 「这个节点可能拥有的字段」，足以判断某个 required 项是否有来源。not 不在其中：
+// 它描述被禁止的形态，不提供字段。
+var schemaCompositionKeys = []string{"allOf", "anyOf", "oneOf", "then", "else"}
+
+// schemaReferencesExternalDefinition 报告节点是否通过引用把自己的字段定义放在别处。
+// 这类节点的 properties 在引用目标里（目标本身会作为 $defs/definitions 的子 schema
+// 被独立清洗），本函数看不到，因此不能据此裁剪它的 required。
+func schemaReferencesExternalDefinition(schema map[string]interface{}) bool {
+	for _, key := range []string{"$ref", "$dynamicRef"} {
+		if ref, ok := schema[key].(string); ok && strings.TrimSpace(ref) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// collectSchemaPropertyNames 收集节点自身及其组合分支声明的字段名。
+func collectSchemaPropertyNames(schema map[string]interface{}, names map[string]bool) {
+	if props, ok := schema["properties"].(map[string]interface{}); ok {
+		for name := range props {
+			names[name] = true
+		}
+	}
+	collectCompositionPropertyNames(schema, names)
+}
+
+// collectCompositionPropertyNames 递归收集组合分支（含嵌套组合）里声明的字段名并集。
+// 只用于判断「同级 required 里的名字是否有来源」，不做 $ref 解析。
+func collectCompositionPropertyNames(schema map[string]interface{}, names map[string]bool) {
+	for _, key := range schemaCompositionKeys {
+		switch branch := schema[key].(type) {
+		case map[string]interface{}:
+			collectSchemaPropertyNames(branch, names)
+		case []interface{}:
+			for _, item := range branch {
+				if sub, ok := item.(map[string]interface{}); ok {
+					collectSchemaPropertyNames(sub, names)
+				}
+			}
+		}
+	}
+}
+
+// pruneRequiredWithoutProperties 处理「声明了 required 但自身没有 properties」的节点。
+// alignRequiredWithProperties 原先只在节点自带 properties 时对齐 required，于是这类
+// 节点的多余项被原样发往上游，触发 strict 校验的
+// `'required' is required to be supplied and to be an array including every key in
+// properties. Extra required key 'x' supplied.`
+//
+// 三种处置，按能拿到的证据强弱排列：
+//   - 字段名藏在 allOf/anyOf/oneOf/then/else 分支里时，按分支并集裁掉无来源的项；
+//     不补齐缺失项——组合语义下补齐会改变 schema 的含义。
+//   - 完全找不到来源、且节点自称 object 时，required 在 additionalProperties=false
+//     下永远无法被满足，整个删除。
+//   - 节点带 $ref/$dynamicRef 时字段定义在别处，保持原样以免误删。
+func pruneRequiredWithoutProperties(schema map[string]interface{}) {
+	existing, ok := schema["required"].([]interface{})
+	if !ok || len(existing) == 0 {
+		return
+	}
+	if schemaReferencesExternalDefinition(schema) {
+		return
+	}
+	names := make(map[string]bool)
+	collectCompositionPropertyNames(schema, names)
+	if len(names) == 0 {
+		if schemaDeclaresObject(schema) {
+			delete(schema, "required")
+		}
+		return
+	}
+	kept := make([]interface{}, 0, len(existing))
+	seen := make(map[string]bool, len(existing))
+	for _, item := range existing {
+		name, ok := item.(string)
+		if !ok || seen[name] || !names[name] {
+			continue
+		}
+		seen[name] = true
+		kept = append(kept, name)
+	}
+	if len(kept) == 0 {
+		delete(schema, "required")
+		return
+	}
+	schema["required"] = kept
 }
 
 func schemaDeclaresArray(schema map[string]interface{}) bool {

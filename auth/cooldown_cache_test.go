@@ -15,11 +15,10 @@ func TestStoreSkipsCachedAccountCooldown(t *testing.T) {
 	primary := newFastSchedulerTestAccount(1, HealthTierHealthy, 120, 1)
 	fallback := newFastSchedulerTestAccount(2, HealthTierHealthy, 80, 1)
 	fallback.LastFailureAt = time.Now()
-	store := &Store{
-		accounts:       []*Account{primary, fallback},
-		maxConcurrency: 1,
-		tokenCache:     tokenCache,
-	}
+	store := (&Store{
+		accounts:   []*Account{primary, fallback},
+		tokenCache: tokenCache,
+	}).withMaxConcurrency(1)
 	store.setCachedAccountCooldown(primary.DBID, "rate_limited", time.Now().Add(time.Hour))
 
 	got := store.Next()
@@ -43,11 +42,10 @@ func TestFastSchedulerSkipsCachedAccountCooldown(t *testing.T) {
 	primary := newFastSchedulerTestAccount(1, HealthTierHealthy, 120, 1)
 	fallback := newFastSchedulerTestAccount(2, HealthTierHealthy, 80, 1)
 	fallback.LastFailureAt = time.Now()
-	store := &Store{
-		accounts:       []*Account{primary, fallback},
-		maxConcurrency: 1,
-		tokenCache:     tokenCache,
-	}
+	store := (&Store{
+		accounts:   []*Account{primary, fallback},
+		tokenCache: tokenCache,
+	}).withMaxConcurrency(1)
 	store.SetFastSchedulerEnabled(true)
 	store.setCachedAccountCooldown(primary.DBID, "rate_limited", time.Now().Add(time.Hour))
 
@@ -70,7 +68,7 @@ func TestCachedPremium5hCooldownHydratesRiskyTier(t *testing.T) {
 	defer tokenCache.Close()
 
 	account := newFastSchedulerTestAccount(9, HealthTierHealthy, 100, 1)
-	store := &Store{accounts: []*Account{account}, maxConcurrency: 1, tokenCache: tokenCache}
+	store := (&Store{accounts: []*Account{account}, tokenCache: tokenCache}).withMaxConcurrency(1)
 	store.setCachedAccountCooldown(account.DBID, "rate_limited_5h", time.Now().Add(time.Hour))
 
 	if !store.accountHasCachedCooldown(account) {
@@ -88,11 +86,10 @@ func TestStoreSkipsCachedModelCooldown(t *testing.T) {
 	primary := newFastSchedulerTestAccount(1, HealthTierHealthy, 120, 1)
 	fallback := newFastSchedulerTestAccount(2, HealthTierHealthy, 80, 1)
 	fallback.LastFailureAt = time.Now()
-	store := &Store{
-		accounts:       []*Account{primary, fallback},
-		maxConcurrency: 1,
-		tokenCache:     tokenCache,
-	}
+	store := (&Store{
+		accounts:   []*Account{primary, fallback},
+		tokenCache: tokenCache,
+	}).withMaxConcurrency(1)
 	store.setCachedModelCooldown(primary.DBID, ModelCooldown{
 		Model:     "gpt-5.4",
 		Reason:    "model_capacity",
@@ -119,11 +116,10 @@ func TestCooldownCacheWritesAndDeletes(t *testing.T) {
 	defer tokenCache.Close()
 
 	acc := newFastSchedulerTestAccount(1, HealthTierHealthy, 100, 1)
-	store := &Store{
-		accounts:       []*Account{acc},
-		maxConcurrency: 1,
-		tokenCache:     tokenCache,
-	}
+	store := (&Store{
+		accounts:   []*Account{acc},
+		tokenCache: tokenCache,
+	}).withMaxConcurrency(1)
 
 	store.MarkCooldown(acc, 5*time.Minute, "rate_limited")
 	if _, ok, err := tokenCache.GetRuntime(context.Background(), accountCooldownCacheNamespace, accountCooldownRuntimeKey(acc.DBID)); err != nil || !ok {
@@ -266,7 +262,7 @@ func TestForgetCachedAccountCooldownDropsRecord(t *testing.T) {
 	defer tokenCache.Close()
 
 	account := newFastSchedulerTestAccount(11, HealthTierHealthy, 100, 1)
-	store := &Store{accounts: []*Account{account}, maxConcurrency: 1, tokenCache: tokenCache}
+	store := (&Store{accounts: []*Account{account}, tokenCache: tokenCache}).withMaxConcurrency(1)
 	store.setCachedAccountCooldown(account.DBID, "unauthorized", time.Now().Add(time.Hour))
 	if _, ok := store.getCachedAccountCooldown(account.DBID); !ok {
 		t.Fatal("precondition: cached cooldown missing")

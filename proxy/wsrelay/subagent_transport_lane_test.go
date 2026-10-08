@@ -74,8 +74,8 @@ func TestSubagentTransportLanesDoNotChangeUpstreamSessionOrPromptCache(t *testin
 		}
 	}
 
-	parentOutbound := executor.prepareWebsocketHeaders("token", account, account.AccountID, session, "api-key", nil, parentHeaders, parentBody)
-	childOutbound := executor.prepareWebsocketHeaders("token", account, account.AccountID, session, "api-key", nil, childHeaders, childBody)
+	parentOutbound := executor.prepareWebsocketHeaders(context.Background(), "token", account, account.AccountID, session, "api-key", nil, parentHeaders, parentBody, "")
+	childOutbound := executor.prepareWebsocketHeaders(context.Background(), "token", account, account.AccountID, session, "api-key", nil, childHeaders, childBody, "")
 	for name, headers := range map[string]http.Header{"parent": parentOutbound, "child": childOutbound} {
 		if got := headers.Get("Session-Id"); got != session {
 			t.Fatalf("%s outbound Session-Id = %q, want shared upstream session", name, got)

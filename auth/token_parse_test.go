@@ -50,7 +50,7 @@ func TestParseIDTokenMissingAuthClaim(t *testing.T) {
 
 func TestParseAccessTokenExtractsPlanType(t *testing.T) {
 	jwt := makeTestJWT(map[string]interface{}{
-		"exp": 9999999999,
+		"exp": int64(9999999999),
 		"https://api.openai.com/auth": map[string]interface{}{
 			"chatgpt_account_id": "acc_456",
 			"chatgpt_plan_type":  "pro",
@@ -167,7 +167,7 @@ func TestRefreshWithSessionToken(t *testing.T) {
 // 但 user_id 不参与 workspace 身份去重。
 func TestParseAccessTokenExtractsUserID(t *testing.T) {
 	jwt := makeTestJWT(map[string]interface{}{
-		"exp": 9999999999,
+		"exp": int64(9999999999),
 		"https://api.openai.com/auth": map[string]interface{}{
 			"user_id":           "user-QJuZktEjr1Sbbiq19lRnZTow",
 			"chatgpt_plan_type": "pro",
@@ -191,7 +191,7 @@ func TestParseAccessTokenExtractsUserID(t *testing.T) {
 
 func TestParseAccessTokenChatGPTUserIDFallback(t *testing.T) {
 	jwt := makeTestJWT(map[string]interface{}{
-		"exp": 9999999999,
+		"exp": int64(9999999999),
 		"https://api.openai.com/auth": map[string]interface{}{
 			"chatgpt_user_id": "user-fallback-1",
 		},

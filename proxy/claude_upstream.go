@@ -1183,6 +1183,10 @@ func SyncClaudeUsageState(store *auth.Store, account *auth.Account, resp *http.R
 	reset5h := claudeRatelimitHeaderTime(h.Get("anthropic-ratelimit-unified-5h-reset"))
 	pct7d, ok7d := claudeRatelimitHeaderPct(h.Get("anthropic-ratelimit-unified-7d-utilization"))
 	reset7d := claudeRatelimitHeaderTime(h.Get("anthropic-ratelimit-unified-7d-reset"))
+	// 7d_oi is Fable's shared weekly window. Presence matters: 0.0 is a
+	// valid observation and must produce a visible 0% model-scoped bar.
+	pctFable, okFable := claudeRatelimitHeaderPct(h.Get("anthropic-ratelimit-unified-7d_oi-utilization"))
+	resetFable := claudeRatelimitHeaderTime(h.Get("anthropic-ratelimit-unified-7d_oi-reset"))
 	observedAt := time.Now()
 	if !ok5h && !ok7d {
 		// A valid native response without quota metadata is still evidence that
@@ -1191,7 +1195,7 @@ func SyncClaudeUsageState(store *auth.Store, account *auth.Account, resp *http.R
 		account.MarkClaudeUsageObservation(observedAt)
 	}
 
-	if ok5h || ok7d {
+	if ok5h || ok7d || okFable {
 		account.ApplyUsageObservation(observedAt, func() {
 			if ok5h {
 				account.SetUsageSnapshot5hAt(pct5h, reset5h, observedAt)
@@ -1201,6 +1205,12 @@ func SyncClaudeUsageState(store *auth.Store, account *auth.Account, resp *http.R
 			}
 			if store == nil {
 				return
+			}
+			if okFable {
+				store.PersistClaudeHeaderUsage(account, []auth.ClaudeUsageWindow{{
+					Name: "7d_fable", Label: "Fable 5.x", Utilization: pctFable,
+					ResetAt: resetFable, ModelScoped: true, ModelFamily: "fable",
+				}}, observedAt)
 			}
 			if ok7d {
 				store.PersistUsageSnapshot(account, pct7d)

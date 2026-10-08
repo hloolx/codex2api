@@ -168,7 +168,7 @@ func TestSchedulerQueueRegistrationAndBurstDoNotLoseCapacity(t *testing.T) {
 
 func newSchedulerWaitTestStore(t *testing.T, size int) *Store {
 	t.Helper()
-	s := &Store{maxConcurrency: 1, schedulerMetrics: newSchedulerRuntimeMetrics()}
+	s := (&Store{schedulerMetrics: newSchedulerRuntimeMetrics()}).withMaxConcurrency(1)
 	for i := 0; i < size; i++ {
 		s.accounts = append(s.accounts, newFastSchedulerTestAccount(int64(i+1), HealthTierHealthy, 90, 1))
 	}
@@ -254,7 +254,7 @@ func TestSchedulerWaitCancellationAfterAdmissionReleasesSlot(t *testing.T) {
 	if acc != nil || !errors.Is(err, context.Canceled) {
 		t.Fatalf("selection after cancellation = %v, %v", acc, err)
 	}
-	if active, occupied := s.accounts[0].GetActiveRequests(), atomic.LoadInt64(&s.accounts[0].OccupiedRequests); active != 0 || occupied != 0 {
+	if active, occupied := s.accounts[0].GetActiveRequests(), s.accounts[0].OccupiedRequests.Load(); active != 0 || occupied != 0 {
 		t.Fatalf("cancellation leaked active=%d occupied=%d", active, occupied)
 	}
 	metrics := s.GetSchedulerMetrics()
@@ -330,7 +330,7 @@ func TestSchedulerWaitConcurrentReleaseAndCancel(t *testing.T) {
 		t.Fatalf("granted %d of %d uncanceled requests", grants.Load(), requests/2)
 	}
 	for _, acc := range s.accounts {
-		if acc.GetActiveRequests() != 0 || atomic.LoadInt64(&acc.OccupiedRequests) != 0 {
+		if acc.GetActiveRequests() != 0 || acc.OccupiedRequests.Load() != 0 {
 			t.Fatal("release/cancel race leaked a slot")
 		}
 	}

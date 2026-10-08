@@ -7,7 +7,7 @@ import (
 	"github.com/codex2api/database"
 )
 
-func TestAstraPricingSourcesCannotRestoreLongContext(t *testing.T) {
+func TestAstraPricingSourcesPreserveLongContext(t *testing.T) {
 	t.Cleanup(func() { database.SetModelPricingOverrides(nil) })
 	for _, tt := range []struct {
 		name  string
@@ -56,12 +56,12 @@ func TestAstraPricingSourcesCannotRestoreLongContext(t *testing.T) {
 			database.SetModelPricingOverrides(parsed)
 			for _, tier := range []string{"", "fast", "priority"} {
 				got := database.CalculateCostBreakdown(300000, 1000, 100000, "gpt-6-astra", tier)
-				want := 2.15
+				want := 4.275
 				if tier != "" {
-					want = 4.3
+					want = 8.55
 				}
-				if got.LongContext || math.Abs(got.TotalCost-want) > 1e-9 {
-					t.Fatalf("tier=%q restored API long-context rates: %+v, want total %v", tier, got, want)
+				if !got.LongContext || math.Abs(got.TotalCost-want) > 1e-9 {
+					t.Fatalf("tier=%q did not preserve API long-context rates: %+v, want total %v", tier, got, want)
 				}
 			}
 		})

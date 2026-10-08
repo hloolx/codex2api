@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -12,6 +13,32 @@ import (
 
 // ClaudeOAuthUsageURL is the zero-spend usage endpoint used by Claude Code.
 const ClaudeOAuthUsageURL = "https://api.anthropic.com/api/oauth/usage"
+
+// Header observations are independent of OAuth usage probes: Setup Tokens
+// cannot read that endpoint, and a Messages fallback must not erase them.
+const ClaudeHeaderUsageCredentialKey = "claude_header_usage"
+
+type ClaudeHeaderUsageSnapshot struct {
+	ObservedAt time.Time           `json:"observed_at"`
+	Windows    []ClaudeUsageWindow `json:"windows"`
+}
+
+// PersistClaudeHeaderUsage is called inside ApplyUsageObservation, alongside
+// the account-wide snapshots, so concurrent responses cannot reorder writes.
+func (s *Store) PersistClaudeHeaderUsage(account *Account, windows []ClaudeUsageWindow, observedAt time.Time) {
+	if s == nil || s.db == nil || account == nil || account.DBID <= 0 || len(windows) == 0 {
+		return
+	}
+	raw, err := json.Marshal(ClaudeHeaderUsageSnapshot{ObservedAt: observedAt, Windows: windows})
+	if err != nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := s.db.UpdateCredentials(ctx, account.DBID, map[string]any{ClaudeHeaderUsageCredentialKey: string(raw)}); err != nil {
+		log.Printf("[账号 %d] 持久化 Claude 响应头用量失败: %v", account.DBID, err)
+	}
+}
 
 // ClaudeUsageWindow is one account-level or model-family usage bucket. Percent
 // values use the OAuth endpoint's 0..100 scale (not the response-header 0..1

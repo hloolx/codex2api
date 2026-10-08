@@ -133,8 +133,9 @@ func (a *Account) IsGrokAPI() bool {
 	return a.isGrokAPILocked()
 }
 
-// isRelayStyleLocked：openai_responses 中转或 Grok —— 一切「非 Codex OAuth 官方上游」
-// 的账号。这类账号不参与 Codex 专属行为（wham 探针、WS 上游、manifest、alpha search）。
+// isRelayStyleLocked：openai_responses 中转、Grok、Antigravity 或 Claude。
+// 这类账号不参与 Codex 官方行为（wham 探针、Codex WS 上游、manifest、alpha search）。
+// OpenAI Responses 中转可以另选自己的 Responses WebSocket，那条连接不进 Codex 池。
 func (a *Account) isRelayStyleLocked() bool {
 	return a.isOpenAIResponsesAPILocked() || a.isGrokAPILocked() || a.isAntigravityAPILocked() || a.isClaudeOAuthLocked()
 }
@@ -337,8 +338,8 @@ func (a *Account) GetGrokFreeQuotaSnapshot() (GrokFreeQuotaSnapshot, bool) {
 }
 
 // GrokChannelSupportsModel 判断 Grok 账号能否服务指定模型（grok 渠道 Key 专用）。
-// 显式 Models 白名单优先；没有白名单时使用富目录的可见模型，尚未同步目录才使用
-// 按凭据类型区分的保守默认集。空列表绝不再表示任意模型透传。
+// 账号写了模型列表时，列表就是可调度集合；列表为空时使用富目录的可见模型，
+// 尚未同步目录才使用按凭据类型区分的保守默认集。空列表绝不再表示任意模型透传。
 func (a *Account) GrokChannelSupportsModel(model string) bool {
 	if a == nil {
 		return false
@@ -349,6 +350,9 @@ func (a *Account) GrokChannelSupportsModel(model string) bool {
 		return false
 	}
 	model = strings.TrimSpace(model)
+	if !GrokModelAllowedForAuthKind(a.GrokAuthKindLocked(), model) {
+		return false
+	}
 	// 不复用 a.Models 的底层数组做 append:len==0 但 cap>0 时,两个并发请求会
 	// 在共享 RLock 下向同一空闲容量写入,构成写-写竞态。目录分支从 nil 开始。
 	var candidates []string
@@ -376,10 +380,32 @@ func (a *Account) GrokChannelSupportsModel(model string) bool {
 			return true
 		}
 	}
+	// 公开别名不在上游目录里。没有模型列表、且目录里至少还有一个可见文本模型时
+	// 仍然放行；空目录保持关闭，模型列表没写这个名字时也不补。
+	if IsGrokFastPublicModel(model) && len(a.Models) == 0 && a.grokCatalogHasVisibleTextModelLocked() {
+		return true
+	}
 	return false
 }
 
-// GrokModels 返回 Grok 账号显式声明的模型白名单；空表示交由富目录/保守默认，
+// grokCatalogHasVisibleTextModelLocked 判断已同步目录里是否还有可调度的文本模型。
+// 调用方必须已持有 a.mu。
+func (a *Account) grokCatalogHasVisibleTextModelLocked() bool {
+	if a == nil || a.grokRouting == nil || !a.grokRouting.CatalogKnown {
+		return false
+	}
+	for _, route := range a.grokRouting.Models {
+		if route.Hidden || (a.GrokAuthKindLocked() == GrokAuthKindAPIKey && route.SupportedInAPI != nil && !*route.SupportedInAPI) {
+			continue
+		}
+		if strings.TrimSpace(route.ModelID) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// GrokModels 返回 Grok 账号保存的模型列表；空表示交由富目录/保守默认，
 // 不表示任意模型透传。
 func (a *Account) GrokModels() []string {
 	if a == nil {
@@ -751,6 +777,23 @@ func grokClaimString(claims map[string]any, key string) string {
 		return strings.TrimSpace(value)
 	}
 	return ""
+}
+
+// GrokAccessTokenHints returns the unverified sub/iat/exp claims of a Grok
+// access token. They are export/display hints only, never authorization facts.
+func GrokAccessTokenHints(token string) (subject string, issuedAt, expiresAt time.Time) {
+	claims := grokJWTClaims(token)
+	if claims == nil {
+		return "", time.Time{}, time.Time{}
+	}
+	subject = grokClaimString(claims, "sub")
+	if iat, ok := claims["iat"].(float64); ok && iat > 0 {
+		issuedAt = time.Unix(int64(iat), 0)
+	}
+	if exp, ok := claims["exp"].(float64); ok && exp > 0 {
+		expiresAt = time.Unix(int64(exp), 0)
+	}
+	return subject, issuedAt, expiresAt
 }
 
 // ==================== OAuth 浏览器授权（PKCE） ====================
@@ -1348,7 +1391,7 @@ func (s *Store) refreshGrokAccount(ctx context.Context, acc *Account, forceRefre
 				if !(acc.Status == StatusCooldown && time.Now().Before(acc.CooldownUtil)) {
 					acc.Status = StatusReady
 				}
-				acc.recomputeSchedulerLocked(atomic.LoadInt64(&s.maxConcurrency))
+				acc.recomputeSchedulerLocked(s.maxConcurrency.Load())
 				acc.mu.Unlock()
 				s.invalidateRoutingSchedulers()
 				s.fastSchedulerUpdate(acc)
@@ -1452,7 +1495,7 @@ func (s *Store) refreshGrokAccount(ctx context.Context, acc *Account, forceRefre
 	if acc.HealthTier != HealthTierBanned {
 		acc.HealthTier = HealthTierHealthy
 	}
-	acc.recomputeSchedulerLocked(atomic.LoadInt64(&s.maxConcurrency))
+	acc.recomputeSchedulerLocked(s.maxConcurrency.Load())
 	acc.mu.Unlock()
 	s.invalidateRoutingSchedulers()
 	s.fastSchedulerUpdate(acc)
@@ -1657,6 +1700,7 @@ func (s *Store) ApplyGrokConfig(dbID int64, baseURL, apiKey string, models []str
 		// discard any runtime observations immediately so old facts cannot route
 		// the newly configured key before the account is reloaded.
 		acc.GrokLivePlanKnown = false
+		acc.GrokDisplayPlan = ""
 		acc.GrokAccessAllowed = nil
 		acc.GrokBillingExhausted = false
 		acc.GrokFactsGeneration = 0
@@ -1668,7 +1712,7 @@ func (s *Store) ApplyGrokConfig(dbID int64, baseURL, apiKey string, models []str
 	if acc.Status != StatusError {
 		acc.HealthTier = HealthTierHealthy
 	}
-	acc.recomputeSchedulerLocked(atomic.LoadInt64(&s.maxConcurrency))
+	acc.recomputeSchedulerLocked(s.maxConcurrency.Load())
 	acc.mu.Unlock()
 	s.invalidateRoutingSchedulers()
 	s.fastSchedulerUpdate(acc)

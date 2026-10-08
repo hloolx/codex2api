@@ -15,6 +15,7 @@ import (
 	"github.com/codex2api/config"
 	"github.com/codex2api/database"
 	"github.com/gin-gonic/gin"
+	"github.com/tidwall/gjson"
 )
 
 func TestImagePerImageRetryBilling(t *testing.T) {
@@ -43,6 +44,13 @@ func TestImagePerImageRetryBilling(t *testing.T) {
 			}
 			var calls atomic.Int32
 			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				// Runtime background probes can share Resin routing with this mock.
+				// Count only actual image requests so probes cannot consume a retry
+				// or make the billing assertion depend on other tests' timing.
+				if !gjson.GetBytes(readUpstreamRequestBody(r), `tools.#(type=="image_generation")`).Exists() {
+					w.WriteHeader(http.StatusNoContent)
+					return
+				}
 				w.Header().Set("Content-Type", "text/event-stream")
 				if calls.Add(1) == 1 {
 					fmt.Fprint(w, "event: error\ndata: {\"type\":\"future_image_failure\",\"error\":{\"message\":\"retry me\"}}\n\n")

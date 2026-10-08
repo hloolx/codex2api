@@ -48,9 +48,45 @@ type GrokModelRoute struct {
 	ContextWindow           int64
 	MaxCompletionTokens     int64
 	SupportsReasoningEffort bool
-	SupportsBackendSearch   bool
-	StreamToolCalls         bool
-	FirstSeenAt             time.Time
+	// ReasoningEffort 是目录声明的默认档（reasoning_effort）。请求没带 effort 时不注入。
+	ReasoningEffort string
+	// ReasoningEfforts 是上游 /v1/models 公布的线协议档位。空表示目录没有菜单，
+	// 请求侧继续用版本启发式（grok-4.6 起放行 xhigh）。
+	ReasoningEfforts      []string
+	SupportsBackendSearch bool
+	StreamToolCalls       bool
+	FirstSeenAt           time.Time
+}
+
+// grokKnownReasoningEfforts 是 grok-build 线协议能点名的档位。
+// 目录里的未知值会被丢掉，避免把展示文案当成可转发的 effort。
+var grokKnownReasoningEfforts = map[string]struct{}{
+	"none": {}, "minimal": {}, "low": {}, "medium": {}, "high": {}, "xhigh": {}, "max": {},
+}
+
+// NormalizeGrokReasoningMenu 把目录菜单收成小写、去重、只保留已知档位，并保持原顺序。
+// 没有任何已知档位时返回 nil，调用方据此退回静态折叠。
+func NormalizeGrokReasoningMenu(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, raw := range values {
+		value := strings.ToLower(strings.TrimSpace(raw))
+		if _, ok := grokKnownReasoningEfforts[value]; !ok {
+			continue
+		}
+		if _, exists := seen[value]; exists {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // GrokProtocolCapability 是一次账号/模型/协议探针结论。
@@ -100,6 +136,9 @@ func cloneGrokHeaders(in map[string]string) map[string]string {
 
 func cloneGrokModelRoute(in GrokModelRoute) GrokModelRoute {
 	in.ExtraHeaders = cloneGrokHeaders(in.ExtraHeaders)
+	if len(in.ReasoningEfforts) > 0 {
+		in.ReasoningEfforts = append([]string(nil), in.ReasoningEfforts...)
+	}
 	if in.SupportedInAPI != nil {
 		value := *in.SupportedInAPI
 		in.SupportedInAPI = &value
@@ -265,6 +304,21 @@ func (a *Account) GrokAuthKindLocked() string {
 		return GrokAuthKindAPIKey
 	}
 	return GrokAuthKindOAuth
+}
+
+// GrokReasoningMenu 返回该账号目录为 model 公布的线协议档位。
+// 没有菜单、目录过期或模型不在目录里时返回 nil，请求侧退回版本启发式。
+func (a *Account) GrokReasoningMenu(model string) []string {
+	model = strings.TrimSpace(model)
+	if a == nil || model == "" {
+		return nil
+	}
+	for _, item := range a.GrokCatalogModels() {
+		if strings.EqualFold(strings.TrimSpace(item.ModelID), model) {
+			return NormalizeGrokReasoningMenu(item.ReasoningEfforts)
+		}
+	}
+	return nil
 }
 
 // GrokCatalogModels 返回富目录内全部模型（含 hidden，供管理端诊断）。

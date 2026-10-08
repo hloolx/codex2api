@@ -208,8 +208,9 @@ func TestGPT56VariantPricing(t *testing.T) {
 	}
 }
 
-// gpt-6-astra 在 Codex 中不收长上下文溢价：跨过 272K 后仍使用同一组单价。
-// standard $10/$50、缓存 $1；保留现有 fast 2× 倍率。
+// gpt-6-astra 跨过 272K 后按长档计价：输入/缓存 2×、输出 1.5×。
+// standard 短档 $10/$50、缓存 $1；长档 $20/$75、缓存 $2；
+// 保留现有 fast 2× 倍率，Ultrafast 按所处档位 standard 价的 6×。
 // 变体后缀 / 思考强度别名同价；未知 gpt-6 变体按 astra 兜底，绝不能掉进默认价。
 func TestGPT6AstraPricing(t *testing.T) {
 	for _, model := range []string{"gpt-6-astra", "gpt-6-astra-high", "gpt-6-astra(xhigh)", "GPT-6-Astra", "gpt-6", "gpt-6-nova"} {
@@ -220,25 +221,30 @@ func TestGPT6AstraPricing(t *testing.T) {
 		assertFloatEqual(t, p.InputPricePerMToken, 10.0)
 		assertFloatEqual(t, p.OutputPricePerMToken, 50.0)
 		assertFloatEqual(t, p.CacheReadPricePerMToken, 1.0)
-		assertFloatEqual(t, p.LongInputPricePerMToken, 0)
-		assertFloatEqual(t, p.LongOutputPricePerMToken, 0)
-		assertFloatEqual(t, p.LongCacheReadPricePerMToken, 0)
+		assertFloatEqual(t, p.LongInputPricePerMToken, 20.0)
+		assertFloatEqual(t, p.LongOutputPricePerMToken, 75.0)
+		assertFloatEqual(t, p.LongCacheReadPricePerMToken, 2.0)
 	}
 
 	for _, input := range []int{100_000, 271_999, 272_000, 272_001, 1_000_000} {
 		for _, tier := range []struct {
 			name       string
 			multiplier float64
-		}{{"", 1}, {"fast", 2}, {"priority", 2}, {"flex", 0.5}} {
+		}{{"", 1}, {"fast", 2}, {"priority", 2}, {"flex", 0.5}, {"ultrafast", 6}} {
 			const cached, output = 100_000, 1_000
 			got := CalculateCostBreakdown(input, output, cached, "gpt-6-astra", tier.name)
-			if got.LongContext {
-				t.Fatalf("Astra applied long-context pricing at input=%d tier=%q: %+v", input, tier.name, got)
+			long := input >= 272000
+			if got.LongContext != long {
+				t.Fatalf("Astra long-context=%v at input=%d tier=%q, want %v: %+v", got.LongContext, input, tier.name, long, got)
 			}
-			assertFloatEqual(t, got.InputPricePerMToken, 10*tier.multiplier)
-			assertFloatEqual(t, got.CacheReadPricePerMToken, tier.multiplier)
-			assertFloatEqual(t, got.OutputPricePerMToken, 50*tier.multiplier)
-			want := (float64(input-cached)*10 + cached + output*50) / 1_000_000 * tier.multiplier
+			inputPrice, cachePrice, outputPrice := 10.0, 1.0, 50.0
+			if long {
+				inputPrice, cachePrice, outputPrice = 20, 2, 75
+			}
+			assertFloatEqual(t, got.InputPricePerMToken, inputPrice*tier.multiplier)
+			assertFloatEqual(t, got.CacheReadPricePerMToken, cachePrice*tier.multiplier)
+			assertFloatEqual(t, got.OutputPricePerMToken, outputPrice*tier.multiplier)
+			want := (float64(input-cached)*inputPrice + cached*cachePrice + output*outputPrice) / 1_000_000 * tier.multiplier
 			assertFloatEqual(t, got.TotalCost, want)
 		}
 	}
@@ -332,7 +338,7 @@ func TestLongContextPricingTriggersAt272KTokens(t *testing.T) {
 	assertFloatEqual(t, std.InputPricePerMToken, 2.5)
 	assertFloatEqual(t, std.OutputPricePerMToken, 15.0)
 
-	// Official table says <272K is short, so the 272K boundary is long pricing.
+	// The existing billing boundary is inclusive at 272K.
 	long := CalculateCostBreakdown(272000, 1000, 0, "gpt-5.4", "")
 	assertFloatEqual(t, long.InputPricePerMToken, 5.0)
 	assertFloatEqual(t, long.OutputPricePerMToken, 22.5)
@@ -441,6 +447,10 @@ func TestGrokPricingUsesXAIRates(t *testing.T) {
 		wantOutput float64
 		wantCache  float64
 	}{
+		{model: "grok-4.7", wantInput: 2.0, wantOutput: 6.0, wantCache: 0.5},
+		{model: "grok-4.7-fast", wantInput: 2.0, wantOutput: 6.0, wantCache: 0.5},
+		{model: "grok-4.7-build-fast", wantInput: 2.0, wantOutput: 6.0, wantCache: 0.5},
+		{model: "grok-4.7-beta", wantInput: 2.0, wantOutput: 6.0, wantCache: 0.5},
 		{model: "grok-4.6", wantInput: 2.0, wantOutput: 6.0, wantCache: 0.5},
 		{model: "grok-4.6-beta", wantInput: 2.0, wantOutput: 6.0, wantCache: 0.5},
 		{model: "grok-4.5", wantInput: 2.0, wantOutput: 6.0, wantCache: 0.3},
@@ -465,7 +475,7 @@ func TestGrokPricingUsesXAIRates(t *testing.T) {
 	}
 }
 
-// grok-4.6 / grok-4.5 更专用的规则必须压过 grok-4，否则 $2/$6 会被当成 $3/$15。
+// grok-4.7 / grok-4.6 / grok-4.5 更专用的规则必须压过 grok-4，否则 $2/$6 会被当成 $3/$15。
 func TestAntigravityGeminiEstimatedPricing(t *testing.T) {
 	tests := []struct {
 		model      string
@@ -487,6 +497,8 @@ func TestAntigravityGeminiEstimatedPricing(t *testing.T) {
 }
 
 func TestGrokMoreSpecificRuleWinsOverShorterPrefix(t *testing.T) {
+	assertPricing(t, GetModelPricing("grok-4.7"), 2.0, 6.0)
+	assertFloatEqual(t, GetModelPricing("grok-4.7").CacheReadPricePerMToken, 0.5)
 	assertPricing(t, GetModelPricing("grok-4.6"), 2.0, 6.0)
 	assertFloatEqual(t, GetModelPricing("grok-4.6").CacheReadPricePerMToken, 0.5)
 	assertPricing(t, GetModelPricing("grok-4.5"), 2.0, 6.0)
@@ -529,6 +541,22 @@ func TestGrokLongContextThresholdIs200K(t *testing.T) {
 	assertFloatEqual(t, long46.CacheReadPricePerMToken, 1.0)
 	if !long46.LongContext {
 		t.Fatal("LongContext = false at 200K for grok-4.6, want true")
+	}
+
+	// grok-4.7 与 grok-4.6 同价同分档线（models.dev xai/grok-4.7）。
+	std47 := CalculateCostBreakdown(199999, 1000, 500, "grok-4.7", "")
+	assertFloatEqual(t, std47.InputPricePerMToken, 2.0)
+	assertFloatEqual(t, std47.OutputPricePerMToken, 6.0)
+	assertFloatEqual(t, std47.CacheReadPricePerMToken, 0.5)
+	if std47.LongContext {
+		t.Fatal("LongContext = true below 200K for grok-4.7, want false")
+	}
+	long47 := CalculateCostBreakdown(200000, 1000, 500, "grok-4.7", "")
+	assertFloatEqual(t, long47.InputPricePerMToken, 4.0)
+	assertFloatEqual(t, long47.OutputPricePerMToken, 12.0)
+	assertFloatEqual(t, long47.CacheReadPricePerMToken, 1.0)
+	if !long47.LongContext {
+		t.Fatal("LongContext = false at 200K for grok-4.7, want true")
 	}
 
 	// Codex 模型不受影响，仍是 272K（官方短档为 <272K）。
@@ -587,4 +615,24 @@ func TestCanonicalBillingModelKeyDaybreakAliases(t *testing.T) {
 	if got := CanonicalBillingModelKey("daybreak-blue"); got == "gpt-5.6-sol" {
 		t.Fatal("bare daybreak-blue must not resolve to gpt-5.6-sol")
 	}
+}
+
+// Astra 的 Ultrafast 倍率是模型自有的：管理员配的 priority 价只影响 Fast，
+// 自定义 standard 价仍作为 Ultrafast 6× 的基数。
+func TestGPT6AstraUltrafastIgnoresPriorityOverride(t *testing.T) {
+	withPricingOverrides(t, map[string]ModelPricingOverride{
+		"gpt-6-astra": {Input: 20, Output: 100, CachedInput: 2, InputPriority: 30, OutputPriority: 150},
+	})
+	// 短档：100K 输入 + 100K 输出。
+	got := CalculateCostBreakdown(100_000, 100_000, 0, "gpt-6-astra", "ultrafast")
+	assertFloatEqual(t, got.ServiceTierCostMultiplier, 6)
+	assertFloatEqual(t, got.TotalCost, (20+100)*0.1*6)
+	fast := CalculateCostBreakdown(100_000, 100_000, 0, "gpt-6-astra", "priority")
+	assertFloatEqual(t, fast.TotalCost, (30+150)*0.1)
+	// 长档：未覆盖的长档字段沿用内置 $20/$75，Ultrafast 同样乘 6。
+	long := CalculateCostBreakdown(1_000_000, 1_000_000, 0, "gpt-6-astra", "ultrafast")
+	if !long.LongContext {
+		t.Fatalf("1M-token Astra request did not use long-context pricing: %+v", long)
+	}
+	assertFloatEqual(t, long.TotalCost, (20+75)*6)
 }

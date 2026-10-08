@@ -210,7 +210,7 @@ func (h *Handler) GetSupplySignal(c *gin.Context) {
 		account.Mu().RUnlock()
 		a := supplyAccount{ID: account.ID(), Email: email, Status: runtime.Status,
 			Enabled:      atomic.LoadInt32(&account.DispatchPaused) == 0,
-			RegisteredAt: supplyTime(time.Unix(0, atomic.LoadInt64(&account.AddedAt))),
+			RegisteredAt: supplyTime(time.Unix(0, account.AddedAt.Load())),
 			LastUsedAt:   supplyTime(account.GetLastUsedAt()), LastUnauthorizedAt: supplyTime(runtime.LastUnauthorizedAt),
 			CooldownUntil: supplyTime(runtime.CooldownUntil), ActiveRequests: runtime.ActiveRequests,
 			Ready: state.Config.Enabled && len(models) > 0, Models: []supplyModel{}, Activity: byID[account.ID()]}

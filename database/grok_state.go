@@ -48,6 +48,8 @@ type GrokAccountFact struct {
 }
 
 type GrokModelCatalogSnapshot struct {
+	// Hint captured before the request, for concurrent invalidation fencing.
+	RequestETagHint      string    `json:"-"`
 	AccountID            int64     `json:"account_id"`
 	Origin               string    `json:"origin"`
 	CredentialGeneration int64     `json:"credential_generation"`
@@ -1186,9 +1188,10 @@ func (db *DB) ReplaceGrokModelCatalog(ctx context.Context, snapshot GrokModelCat
 		}
 		var existing GrokModelCatalogSnapshot
 		var existingSnapshot bool
-		e = tx.QueryRowContext(ctx, `SELECT credential_generation,auth_kind,status,http_etag
+		var existingHintAt, existingObservedAt, existingExpiresAt any
+		e = tx.QueryRowContext(ctx, `SELECT credential_generation,auth_kind,status,http_etag,etag_hint,etag_hint_observed_at,observed_at,expires_at
 			FROM grok_model_catalog_snapshots WHERE account_id=$1 AND origin=$2`, snapshot.AccountID, snapshot.Origin).
-			Scan(&existing.CredentialGeneration, &existing.AuthKind, &existing.Status, &existing.HTTPETag)
+			Scan(&existing.CredentialGeneration, &existing.AuthKind, &existing.Status, &existing.HTTPETag, &existing.ETagHint, &existingHintAt, &existingObservedAt, &existingExpiresAt)
 		switch {
 		case e == nil:
 			existingSnapshot = true
@@ -1196,6 +1199,32 @@ func (db *DB) ReplaceGrokModelCatalog(ctx context.Context, snapshot GrokModelCat
 			e = nil
 		default:
 			return e
+		}
+
+		if existingSnapshot && existing.CredentialGeneration == snapshot.CredentialGeneration {
+			existing.ETagHintObservedAt, e = parseDBTimeValue(existingHintAt)
+			if existingHintAt == nil {
+				existing.ETagHintObservedAt = time.Time{}
+				e = nil
+			}
+			if e != nil {
+				return e
+			}
+			existing.ObservedAt, e = parseDBTimeValue(existingObservedAt)
+			if e != nil {
+				return e
+			}
+			existing.ExpiresAt, e = parseDBTimeValue(existingExpiresAt)
+			if e != nil {
+				return e
+			}
+			// A delayed response cannot replace a more recent observation.
+			if snapshot.ObservedAt.Before(existing.ObservedAt) {
+				// A newer same-generation observation already satisfies this write.
+				applied = true
+				return nil
+			}
+			mergeGrokCatalogHint(&snapshot, existing)
 		}
 
 		upsert := `INSERT INTO grok_model_catalog_snapshots(account_id,origin,credential_generation,auth_kind,status,http_etag,etag_hint,etag_hint_observed_at,observed_at,expires_at,updated_at)
@@ -1265,7 +1294,6 @@ func (db *DB) ReplaceGrokModelCatalog(ctx context.Context, snapshot GrokModelCat
 			existing.CredentialGeneration != snapshot.CredentialGeneration ||
 			!strings.EqualFold(strings.TrimSpace(existing.AuthKind), strings.TrimSpace(snapshot.AuthKind)) ||
 			!strings.EqualFold(strings.TrimSpace(existing.Status), "ok") ||
-			existing.HTTPETag != snapshot.HTTPETag ||
 			grokCatalogContentSignature(existingItems) != grokCatalogContentSignature(normalizedItems)
 		if _, e = tx.ExecContext(ctx, upsert, snapshot.AccountID, snapshot.Origin, snapshot.CredentialGeneration, snapshot.AuthKind, snapshot.Status, snapshot.HTTPETag, snapshot.ETagHint, hintAt, db.timeArg(snapshot.ObservedAt), db.timeArg(snapshot.ExpiresAt)); e != nil {
 			return e
@@ -1314,8 +1342,9 @@ func (db *DB) TouchGrokModelCatalogNotModified(ctx context.Context, accountID in
 	if expiresAt.IsZero() {
 		expiresAt = observedAt.Add(5 * time.Minute)
 	}
-	res, err := db.conn.ExecContext(ctx, `UPDATE grok_model_catalog_snapshots SET status='ok',observed_at=$1,expires_at=$2,updated_at=CURRENT_TIMESTAMP
-		WHERE account_id=$3 AND origin=$4 AND credential_generation=$5 AND EXISTS(SELECT 1 FROM accounts WHERE id=$3 AND credential_generation=$5)`, db.timeArg(observedAt), db.timeArg(expiresAt), accountID, strings.TrimRight(strings.TrimSpace(origin), "/"), generation)
+	res, err := db.conn.ExecContext(ctx, `UPDATE grok_model_catalog_snapshots SET status='ok',observed_at=$1,
+        expires_at=CASE WHEN etag_hint_observed_at>$1 AND expires_at<=etag_hint_observed_at THEN expires_at ELSE $2 END,updated_at=CURRENT_TIMESTAMP
+		WHERE account_id=$3 AND origin=$4 AND credential_generation=$5 AND observed_at<=$1 AND EXISTS(SELECT 1 FROM accounts WHERE id=$3 AND credential_generation=$5)`, db.timeArg(observedAt), db.timeArg(expiresAt), accountID, strings.TrimRight(strings.TrimSpace(origin), "/"), generation)
 	if err != nil {
 		return false, err
 	}
@@ -1362,7 +1391,7 @@ func (db *DB) UpdateGrokModelsETagHint(ctx context.Context, accountID int64, ori
 		}
 		res, err := tx.ExecContext(ctx, `UPDATE grok_model_catalog_snapshots SET etag_hint=$1,etag_hint_observed_at=$2,
 			expires_at=CASE WHEN etag_hint<>$1 AND expires_at>$2 THEN $2 ELSE expires_at END,updated_at=CURRENT_TIMESTAMP
-			WHERE account_id=$3 AND origin=$4 AND credential_generation=$5`, hint, db.timeArg(observedAt), accountID, origin, generation)
+			WHERE account_id=$3 AND origin=$4 AND credential_generation=$5 AND (etag_hint_observed_at IS NULL OR etag_hint_observed_at<=$2)`, hint, db.timeArg(observedAt), accountID, origin, generation)
 		if err != nil {
 			return err
 		}

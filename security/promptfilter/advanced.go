@@ -133,8 +133,16 @@ type NewAPIConfig struct {
 }
 
 type EnforcementConfig struct {
-	TerminalCategories       []string `json:"terminal_categories"`
-	TerminalBypassModels     []string `json:"terminal_bypass_models"`
+	TerminalCategories   []string `json:"terminal_categories"`
+	TerminalBypassModels []string `json:"terminal_bypass_models"`
+	// ApprovalReviewModels 是可信的 Codex 自动审批(Guardian)请求模型。只有请求模型
+	// 在此列表、且请求通过封闭模板结构校验时,审批请求里的父会话记录才按不可信
+	// 证据处理而不再当作用户输入拦截;待审批动作仍同步审计。
+	//
+	// 模板可以伪造,所以只应放入专用审批模型,或确认只用于审批的模型。自定义
+	// provider 走 API Key 鉴权时 Codex 会改用 gpt-5.6-luna 或父会话模型发起审批,
+	// 需要在此显式加入。空列表表示不识别审批模板。
+	ApprovalReviewModels     []string `json:"approval_review_models"`
 	LocalBlockMessage        string   `json:"local_block_message,omitempty"`
 	ConversationLockEnabled  bool     `json:"conversation_lock_enabled"`
 	ConversationLockTTLHours int      `json:"conversation_lock_ttl_hours"`
@@ -302,7 +310,7 @@ func DefaultAdvancedConfig() AdvancedConfig {
 		Output:          OutputConfig{BufferBytes: 4096, OverlapBytes: 512, StrictOnly: true},
 		Intelligence:    IntelligenceConfig{IntervalHours: 24, Queries: DefaultIntelligenceQueries(), MaxSearchResults: 20, Model: "gpt-5.5", MaxModelCalls: 1},
 		NewAPI:          NewAPIConfig{MaxClockSkewSeconds: 120},
-		Enforcement:     EnforcementConfig{TerminalBypassModels: []string{"codex-auto-review"}, ConversationLockEnabled: true, ConversationLockTTLHours: 168, UserCyberCooldownMinutes: DefaultUserCyberCooldownMinutes, CYBStrikeEnabled: false, LocalSevereStrikeEnabled: true},
+		Enforcement:     EnforcementConfig{TerminalBypassModels: []string{"codex-auto-review"}, ApprovalReviewModels: []string{"codex-auto-review"}, ConversationLockEnabled: true, ConversationLockTTLHours: 168, UserCyberCooldownMinutes: DefaultUserCyberCooldownMinutes, CYBStrikeEnabled: false, LocalSevereStrikeEnabled: true},
 		Guard:           DefaultGuardConfig(),
 	}
 }
@@ -747,6 +755,25 @@ func MarshalAdvancedConfig(cfg AdvancedConfig) string {
 	return string(b)
 }
 
+// normalizeEnforcementModels lower-cases and de-duplicates a model list. A nil
+// list (field absent from older stored JSON) inherits the default; an explicit
+// empty list stays empty.
+func normalizeEnforcementModels(models []string, defaults []string) []string {
+	if models == nil {
+		models = defaults
+	}
+	seen := map[string]bool{}
+	normalized := make([]string, 0, len(models))
+	for _, model := range models {
+		model = strings.ToLower(strings.TrimSpace(model))
+		if model != "" && !seen[model] {
+			seen[model] = true
+			normalized = append(normalized, model)
+		}
+	}
+	return normalized
+}
+
 func NormalizeAdvancedConfig(cfg AdvancedConfig) AdvancedConfig {
 	d := DefaultAdvancedConfig()
 	cfg.Guard = NormalizeGuardConfig(cfg.Guard)
@@ -760,20 +787,8 @@ func NormalizeAdvancedConfig(cfg AdvancedConfig) AdvancedConfig {
 		}
 	}
 	cfg.Enforcement.TerminalCategories = categories
-	bypassModels := cfg.Enforcement.TerminalBypassModels
-	if bypassModels == nil {
-		bypassModels = d.Enforcement.TerminalBypassModels
-	}
-	seenBypassModels := map[string]bool{}
-	normalizedBypassModels := make([]string, 0, len(bypassModels))
-	for _, model := range bypassModels {
-		model = strings.ToLower(strings.TrimSpace(model))
-		if model != "" && !seenBypassModels[model] {
-			seenBypassModels[model] = true
-			normalizedBypassModels = append(normalizedBypassModels, model)
-		}
-	}
-	cfg.Enforcement.TerminalBypassModels = normalizedBypassModels
+	cfg.Enforcement.TerminalBypassModels = normalizeEnforcementModels(cfg.Enforcement.TerminalBypassModels, d.Enforcement.TerminalBypassModels)
+	cfg.Enforcement.ApprovalReviewModels = normalizeEnforcementModels(cfg.Enforcement.ApprovalReviewModels, d.Enforcement.ApprovalReviewModels)
 	localBlockMessage := []rune(strings.TrimSpace(cfg.Enforcement.LocalBlockMessage))
 	if len(localBlockMessage) > MaxLocalBlockMessageRunes {
 		localBlockMessage = localBlockMessage[:MaxLocalBlockMessageRunes]

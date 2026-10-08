@@ -208,13 +208,12 @@ func TestNextSkipsPinnedDisabledProxyWhenPoolEnabled(t *testing.T) {
 		disabledURL = "http://disabled.example:8080"
 		enabledURL  = "http://enabled.example:8080"
 	)
-	store := &Store{
-		maxConcurrency:   2,
+	store := (&Store{
 		proxyPoolEnabled: true,
 		proxyPool:        []string{enabledURL},
 		proxyPoolSet:     buildProxyPoolSet([]string{enabledURL}),
 		managedProxySet:  buildProxyPoolSet([]string{disabledURL, enabledURL}),
-	}
+	}).withMaxConcurrency(2)
 	store.AddAccount(&Account{DBID: 1, AccessToken: "tok-pinned", ProxyURL: disabledURL})
 	store.AddAccount(&Account{DBID: 2, AccessToken: "tok-unbound"})
 
@@ -232,10 +231,9 @@ func TestNextSkipsPinnedDisabledProxyWhenPoolEnabled(t *testing.T) {
 }
 
 func TestNextReturnsNilWhenPoolEnabledAndNoUsableProxy(t *testing.T) {
-	store := &Store{
-		maxConcurrency:   2,
+	store := (&Store{
 		proxyPoolEnabled: true,
-	}
+	}).withMaxConcurrency(2)
 	store.AddAccount(&Account{DBID: 1, AccessToken: "tok-1"})
 	if selected := store.NextExcludingWithFilter(0, nil, nil); selected != nil {
 		t.Fatalf("selected account %d, want none when pool is on and empty", selected.DBID)

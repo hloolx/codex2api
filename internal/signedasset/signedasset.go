@@ -38,7 +38,11 @@ func ImageAssetURLWithTTL(assetID int64, thumbKB int, ttl time.Duration) string 
 	if ttl <= 0 {
 		ttl = defaultImageAssetTTL
 	}
-	exp := time.Now().Add(ttl).Unix()
+	expiry := time.Now().Add(ttl)
+	if ttl == defaultImageAssetTTL {
+		expiry = expiry.Truncate(time.Hour)
+	}
+	exp := expiry.Unix()
 	sig := imageAssetSignature(assetID, exp, thumbKB)
 	if thumbKB > 0 {
 		return publicImageAssetURL(fmt.Sprintf("%s/%d?exp=%d&thumb_kb=%d&sig=%s", imageAssetPathPrefix, assetID, exp, thumbKB, sig))

@@ -34,7 +34,7 @@ func TestGuardCodexTurnStateEchoStripsCrossAccountEcho(t *testing.T) {
 	c, _ := newTurnStateTestContext(t)
 	upstream := http.Header{}
 	upstream.Set(codexTurnStateHeader, "blob-from-minter")
-	relayCodexTurnStateResponseHeader(c, affinityKey, minter, upstream)
+	relayCodexTurnStateResponseHeader(c, affinityKey, minter, "gpt-test", upstream)
 
 	echo := http.Header{}
 	echo.Set(codexTurnStateHeader, "blob-from-minter")
@@ -91,12 +91,12 @@ func TestRelayCodexTurnStateClearsStaleHeaderOnFailover(t *testing.T) {
 	c, recorder := newTurnStateTestContext(t)
 	first := http.Header{}
 	first.Set(codexTurnStateHeader, "blob-attempt-1")
-	relayCodexTurnStateResponseHeader(c, affinityKey, &auth.Account{DBID: 101}, first)
+	relayCodexTurnStateResponseHeader(c, affinityKey, &auth.Account{DBID: 101}, "gpt-test", first)
 	if got := recorder.Header().Get(codexTurnStateHeader); got != "blob-attempt-1" {
 		t.Fatalf("first relay header = %q", got)
 	}
 
-	relayCodexTurnStateResponseHeader(c, affinityKey, &auth.Account{DBID: 202}, http.Header{})
+	relayCodexTurnStateResponseHeader(c, affinityKey, &auth.Account{DBID: 202}, "gpt-test", http.Header{})
 	if got := recorder.Header().Get(codexTurnStateHeader); got != "" {
 		t.Fatalf("stale turn-state survived failover relay: %q", got)
 	}
@@ -116,7 +116,7 @@ func TestCommitResponsesStreamAttemptStagesWinningTurnStateBeforeHeadersCommit(t
 	upstream.Set(codexTurnStateHeader, "winning-turn-state")
 	account := &auth.Account{DBID: 303}
 
-	if err := (&Handler{}).commitResponsesStreamAttempt(c, attempt, affinityKey, account, upstream); err != nil {
+	if err := (&Handler{}).commitResponsesStreamAttempt(c, attempt, affinityKey, account, "gpt-test", upstream); err != nil {
 		t.Fatalf("commit response attempt: %v", err)
 	}
 	result := recorder.Result()
@@ -145,7 +145,7 @@ func TestCommitResponsesStreamAttemptDoesNotForgeTurnStateAfterHeartbeat(t *test
 	upstream := http.Header{}
 	upstream.Set(codexTurnStateHeader, "late-turn-state")
 
-	if err := (&Handler{}).commitResponsesStreamAttempt(c, attempt, affinityKey, &auth.Account{DBID: 404}, upstream); err != nil {
+	if err := (&Handler{}).commitResponsesStreamAttempt(c, attempt, affinityKey, &auth.Account{DBID: 404}, "gpt-test", upstream); err != nil {
 		t.Fatalf("commit response attempt: %v", err)
 	}
 	result := recorder.Result()

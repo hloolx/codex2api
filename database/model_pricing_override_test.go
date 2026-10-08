@@ -181,12 +181,12 @@ func TestModelPricingOverride_LongPriorityFieldsRoundTripAndApply(t *testing.T) 
 	}
 }
 
-func TestModelPricingOverride_AstraIgnoresLongContextPrices(t *testing.T) {
+func TestModelPricingOverride_AstraAppliesLongContextPrices(t *testing.T) {
 	t.Cleanup(func() { SetModelPricingOverrides(nil) })
 
 	for _, source := range []string{ModelPricingSourceCustom, ModelPricingSourceSynced} {
 		t.Run(source, func(t *testing.T) {
-			// 旧手工价和官方 API 同步价都可能包含长档；标准价和 Fast 价仍须保留。
+			// 手工价和官方 API 同步价都保留 Astra 的长档与阈值。
 			override := ModelPricingOverride{
 				Source: source, Input: 12, CachedInput: 2, Output: 60,
 				InputPriority: 24, CachedInputPriority: 4, OutputPriority: 120,
@@ -201,6 +201,9 @@ func TestModelPricingOverride_AstraIgnoresLongContextPrices(t *testing.T) {
 			want := ModelPricingOverride{
 				Source: source, Input: 12, CachedInput: 2, Output: 60,
 				InputPriority: 24, CachedInputPriority: 4, OutputPriority: 120,
+				InputLong: 30, CachedInputLong: 4, OutputLong: 90,
+				InputLongPriority: 60, CachedInputLongPriority: 8, OutputLongPriority: 180,
+				LongContextThresholdTokens: 200000,
 			}
 			for _, model := range []string{"gpt-6-astra", "GPT-6-Astra", "gpt-6-astra-high", "gpt-6-astra(xhigh)"} {
 				projected := ModelPricingOverrideFromPricing(GetModelPricing(model), ModelPricingSourceFor("gpt-6-astra"))
@@ -209,12 +212,12 @@ func TestModelPricingOverride_AstraIgnoresLongContextPrices(t *testing.T) {
 				}
 				for _, tier := range []string{"", "fast", "priority"} {
 					got := CalculateCostBreakdown(300000, 1000, 100000, model, tier)
-					if got.LongContext {
-						t.Fatalf("%s tier=%q restored long-context pricing: %+v", model, tier, got)
+					if !got.LongContext {
+						t.Fatalf("%s tier=%q did not apply long-context pricing: %+v", model, tier, got)
 					}
-					cost := 2.66 // 200K uncached * $12 + 100K cached * $2 + 1K output * $60.
+					cost := 6.49 // 200K uncached * $30 + 100K cached * $4 + 1K output * $90.
 					if tier != "" {
-						cost *= 2
+						cost = 12.98 // Explicit long priority prices: $60/$8/$180.
 					}
 					assertFloatEqual(t, got.TotalCost, cost)
 				}

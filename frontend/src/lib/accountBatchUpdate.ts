@@ -10,6 +10,8 @@ export interface BuildBatchMetadataUpdateOptions {
   scoreBias: number | null;
   updateBaseConcurrency: boolean;
   baseConcurrency: number | null;
+  updateKeepConcurrency?: boolean;
+  keepConcurrency?: boolean;
   updateSchedulerPriority: boolean;
   schedulerPriority: number | null;
   updateCodexFingerprintMode?: boolean;
@@ -28,6 +30,8 @@ export function buildBatchMetadataUpdate({
   scoreBias,
   updateBaseConcurrency,
   baseConcurrency,
+  updateKeepConcurrency,
+  keepConcurrency,
   updateSchedulerPriority,
   schedulerPriority,
   updateCodexFingerprintMode,
@@ -41,6 +45,8 @@ export function buildBatchMetadataUpdate({
   if (updateScoreBias) payload.score_bias_override = scoreBias;
   if (updateBaseConcurrency)
     payload.base_concurrency_override = baseConcurrency;
+  if (updateKeepConcurrency)
+    payload.keep_concurrency_on_degrade = keepConcurrency ?? false;
   if (updateSchedulerPriority) payload.scheduler_priority = schedulerPriority;
   if (updateCodexFingerprintMode)
     payload.codex_fingerprint_mode = codexFingerprintMode ?? "off";

@@ -62,6 +62,9 @@ import type {
   AccountPageStatsResponse,
   AccountLiveStateResponse,
   ChartAggregation,
+  ChannelMonitorConfig,
+  ChannelMonitorBillingRatesResponse,
+  ChannelMonitorListResponse,
   CreateAccountResponse,
   CreateAPIKeyResponse,
   CreateAPIKeyRequest,
@@ -118,6 +121,7 @@ import type {
   PromptReviewTestRequest,
   PromptReviewTestResponse,
   PromptReviewAPIKeysResponse,
+  PublicAPIKeyUsageLogFilter,
   PublicAPIKeyUsageResponse,
   ImageStudioQuota,
   RecycleBinAccountsResponse,
@@ -135,6 +139,7 @@ import type {
   CodexUserAgentCatalog,
   CodexUserAgentPreview,
   UpdateAccountSchedulerRequest,
+  UpdateChannelMonitorConfigRequest,
   UpdateAPIKeyRequest,
   UpdatePromptFilterNewAPIBindingRequest,
   UpdateOAuthAccountRequest,
@@ -502,6 +507,7 @@ export type UsageLogQueryParams = {
   accountId?: string
   fast?: string
   ultra?: string
+  upstreamModelMismatch?: string
   stream?: string
   compact?: string
   hasCompactionHistory?: string
@@ -526,6 +532,7 @@ export function buildUsageLogSearchParams(params: UsageLogQueryParams) {
   if (params.accountId) search.set('account_id', params.accountId)
   if (params.fast) search.set('fast', params.fast)
   if (params.ultra) search.set('ultra', params.ultra)
+  if (params.upstreamModelMismatch) search.set('upstream_model_mismatch', params.upstreamModelMismatch)
   if (params.stream) search.set('stream', params.stream)
   if (params.compact) search.set('compact', params.compact)
   if (params.hasCompactionHistory) search.set('has_compaction_history', params.hasCompactionHistory)
@@ -537,6 +544,28 @@ export function buildUsageLogSearchParams(params: UsageLogQueryParams) {
   if (params.viaWebsocket) search.set('via_websocket', params.viaWebsocket)
   if (params.includeCanceled) search.set('include_canceled', params.includeCanceled)
   return search
+}
+
+export interface ModelTraceBankInfo {
+  origin: 'embedded' | 'override'
+  revision: string
+  built_at: string
+  models: string[]
+}
+
+export interface ModelTraceBankStatus {
+  active: ModelTraceBankInfo
+  embedded: ModelTraceBankInfo
+  override?: ModelTraceBankInfo
+  override_stale?: boolean
+  override_error?: string
+}
+
+export interface ModelTraceBankUpdateResult extends ModelTraceBankStatus {
+  updated: boolean
+  message: string
+  added_models?: string[]
+  removed_models?: string[]
 }
 
 export const api = {
@@ -568,11 +597,16 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(data),
     }),
-  getPublicAPIKeyUsage: (apiKey: string, range = '30d', params: { page?: number; pageSize?: number } = {}) => {
+  getPublicAPIKeyUsage: (apiKey: string, range = '30d', params: { page?: number; pageSize?: number } & PublicAPIKeyUsageLogFilter = {}) => {
     const search = new URLSearchParams()
     search.set('range', range)
     if (params.page) search.set('page', String(params.page))
     if (params.pageSize) search.set('page_size', String(params.pageSize))
+    if (params.model) search.set('model', params.model)
+    if (params.endpoint) search.set('endpoint', params.endpoint)
+    if (params.status) search.set('status', params.status)
+    if (params.stream) search.set('stream', params.stream)
+    if (params.channel) search.set('channel', params.channel)
     return requestAPIKeyUsage<PublicAPIKeyUsageResponse>(`/summary?${search.toString()}`, apiKey)
   },
   getPortalImageQuota: (apiKey: string) =>
@@ -582,13 +616,14 @@ export const api = {
   createPortalImageEditJob: (apiKey: string, data: CreateImageJobPayload) =>
     requestImageStudioPortal<ImageJobResponse>('/edit-jobs', apiKey, { method: 'POST', body: JSON.stringify(data) }),
   getPortalImageJobs: (apiKey: string, params: { page?: number; pageSize?: number } = {}) => {
-    const sp = new URLSearchParams()
+    const sp = new URLSearchParams({ summary: '1' })
     if (params.page) sp.set('page', String(params.page))
     if (params.pageSize) sp.set('page_size', String(params.pageSize))
     return requestImageStudioPortal<ImageJobsResponse>(`/jobs?${sp.toString()}`, apiKey)
   },
-  getPortalImageJob: (apiKey: string, id: number, params: { includeCache?: boolean } = {}) => {
+  getPortalImageJob: (apiKey: string, id: number, params: { includeCache?: boolean; summary?: boolean } = {}) => {
     const sp = new URLSearchParams()
+    if (params.summary === true || (params.summary !== false && !params.includeCache)) sp.set('summary', '1')
     if (params.includeCache) sp.set('include_cache', '1')
     const query = sp.toString()
     return requestImageStudioPortal<ImageJobResponse>(`/jobs/${id}${query ? `?${query}` : ''}`, apiKey)
@@ -698,6 +733,22 @@ export const api = {
       `/accounts/${id}/openai-responses/balance${force ? '?refresh=1' : ''}`,
       { signal, timeoutMs: 25_000 },
     ),
+  getChannelMonitorConfig: (id: number, signal?: AbortSignal) =>
+    request<ChannelMonitorConfig>(`/accounts/${id}/channel-monitor`, { signal }),
+  updateChannelMonitorConfig: (id: number, data: UpdateChannelMonitorConfigRequest) =>
+    request<ChannelMonitorConfig>(`/accounts/${id}/channel-monitor`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }),
+  getChannelMonitors: (signal?: AbortSignal) =>
+    request<ChannelMonitorListResponse>('/channel-monitors', { signal }),
+  getChannelMonitorBillingRates: (signal?: AbortSignal) =>
+    request<ChannelMonitorBillingRatesResponse>('/channel-monitors/billing-rates', { signal }),
+  probeChannelMonitor: (id: number) =>
+    request<MessageResponse>(`/channel-monitors/${id}/probe`, {
+      method: 'POST',
+      timeoutMs: 80_000,
+    }),
   addGrokAccount: (data: AddGrokAccountRequest) =>
     request<CreateAccountResponse>('/accounts/grok', { method: 'POST', body: JSON.stringify(data) }),
   fetchGrokModels: (data: AddGrokAccountRequest) =>
@@ -1045,7 +1096,7 @@ export const api = {
       body: JSON.stringify({ channels }),
     }),
   getAntigravitySettings: () => request<AntigravitySettingsResponse>('/settings/antigravity'),
-  updateAntigravitySettings: (patch: { model_redirects?: Record<string, string>; redirect_overrides_effort?: boolean }) =>
+  updateAntigravitySettings: (patch: { model_redirects?: Record<string, string>; redirect_overrides_effort?: boolean; expose_thoughts?: boolean }) =>
     request<AntigravitySettingsResponse>('/settings/antigravity', {
       method: 'PUT',
       body: JSON.stringify(patch),
@@ -1079,7 +1130,7 @@ export const api = {
   },
   updateAccountCredit: (id: number, data: { credit_enabled: boolean; credit_skip_usage_window: boolean }) =>
     request<MessageResponse>(`/accounts/${id}/credit`, { method: 'PATCH', body: JSON.stringify(data) }),
-  getHealth: () => request<HealthResponse>('/health'),
+  getHealth: (options?: { timeoutMs?: number }) => request<HealthResponse>('/health', options),
   getPromptFilterNewAPIBindings: () =>
     request<PromptFilterNewAPIBindingsResponse>('/prompt-filter/newapi-bindings'),
   getPromptFilterNewAPIBinding: (apiKeyId: number) =>
@@ -1241,7 +1292,10 @@ export const api = {
     sp.set('bucket_minutes', String(params.bucketMinutes))
     return request<{ trend: AccountEventTrendPoint[] }>(`/accounts/event-trend?${sp.toString()}`)
   },
-  getAPIKeys: () => request<APIKeysResponse>('/keys'),
+  // view: 'lite' — 只要密钥行本身,跳过窗口费用/最近使用时间的日志聚合(筛选下拉等场景)。
+  getAPIKeys: (params: { view?: 'lite' } = {}) =>
+    request<APIKeysResponse>(params.view ? `/keys?view=${params.view}` : '/keys'),
+  getAPIKeyConcurrency: () => request<{ concurrency: Record<string, number> }>('/keys-concurrency'),
   createAPIKey: (data: CreateAPIKeyRequest) =>
     request<CreateAPIKeyResponse>('/keys', {
       method: 'POST',
@@ -1287,13 +1341,14 @@ export const api = {
   createImageEditJob: (data: CreateImageJobPayload) =>
     request<ImageJobResponse>('/images/edit-jobs', { method: 'POST', body: JSON.stringify(data) }),
   getImageJobs: (params: { page?: number; pageSize?: number } = {}) => {
-    const sp = new URLSearchParams()
+    const sp = new URLSearchParams({ summary: '1' })
     if (params.page) sp.set('page', String(params.page))
     if (params.pageSize) sp.set('page_size', String(params.pageSize))
     return request<ImageJobsResponse>(`/images/jobs?${sp.toString()}`)
   },
-  getImageJob: (id: number, params: { includeCache?: boolean } = {}) => {
+  getImageJob: (id: number, params: { includeCache?: boolean; summary?: boolean } = {}) => {
     const sp = new URLSearchParams()
+    if (params.summary === true || (params.summary !== false && !params.includeCache)) sp.set('summary', '1')
     if (params.includeCache) sp.set('include_cache', '1')
     const query = sp.toString()
     return request<ImageJobResponse>(`/images/jobs/${id}${query ? `?${query}` : ''}`)
@@ -1520,7 +1575,7 @@ export const api = {
     request<{ prompt: QualityTestPrompt }>(`/quality-test-prompts/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
   deleteQualityTestPrompt: (id: number) =>
     request<{ message: string }>(`/quality-test-prompts/${id}`, { method: 'DELETE' }),
-  createQualityTest: (accountId: number, body: { model: string; reasoning_effort: string; prompt: string; prompt_id?: number; preset_key?: string; preset_name?: string }) =>
+  createQualityTest: (accountId: number, body: { model: string; reasoning_effort: string; prompt: string; prompt_id?: number; preset_key?: string; preset_name?: string; timeout_minutes?: number }) =>
     request<{ job: QualityTestJob }>(`/accounts/${accountId}/quality-test`, { method: 'POST', body: JSON.stringify(body) }),
   getQualityTests: (page = 1, filter: QualityTestJobsFilter = {}, signal?: AbortSignal) =>
     request<QualityTestJobsResponse>(`/quality-tests?${qualityTestFilterQuery(page, filter)}`, { signal }),
@@ -1536,6 +1591,8 @@ export const api = {
       builtin_version: string
       updated: boolean
     }>('/codex-cli-version/sync', { method: 'POST' }),
+  syncCodexClientVersions: () =>
+    request<Record<'cli' | 'desktop_mac' | 'desktop_windows' | 'vscode', import('./types').CodexClientVersionSyncResult>>('/codex-client-versions/sync', { method: 'POST' }),
   listModelPricing: () =>
     request<{
       models: Array<{
@@ -1564,6 +1621,10 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ url: url ?? '' }),
     }),
+  getModelTraceBank: () => request<ModelTraceBankStatus>('/modeltrace/bank'),
+  updateModelTraceBank: () =>
+    request<ModelTraceBankUpdateResult>('/modeltrace/bank/update', { method: 'POST', timeoutMs: 120_000 }),
+  resetModelTraceBank: () => request<ModelTraceBankStatus>('/modeltrace/bank', { method: 'DELETE' }),
 	updateOfficialPricingSyncConfig: (config: Pick<OfficialPricingSyncConfig, 'enabled' | 'interval_minutes' | 'include_openai' | 'include_grok' | 'include_claude'>) =>
 		request<OfficialPricingSyncConfig>('/model-pricing/official-sync/config', {
 			method: 'PUT',
@@ -1622,6 +1683,9 @@ export const api = {
   },
   downloadAccountAuthJSON: (id: number) =>
     requestBlob(`/accounts/${id}/auth-json`),
+  // Grok CLI(~/.grok/auth.json)格式;不带 refresh token 时不会与网关争用同一 RT 家族。
+  downloadGrokAuthJSON: (id: number, includeRefreshToken: boolean) =>
+    requestBlob(`/accounts/${id}/grok/auth-json?include_refresh_token=${includeRefreshToken}`),
   /**
    * 导出 Grok 账号凭据。ids 为空则导出全部 Grok 账号。
    * 单个账号返回裸 JSON，多个账号返回 ZIP（内部每账号一个 <邮箱>.json）。
@@ -1656,7 +1720,7 @@ export const api = {
     request<{ message: string; deleted: number }>('/proxies/batch-delete', { method: 'POST', body: JSON.stringify({ ids }) }),
   cleanErrorProxies: () =>
     request<{ message: string; cleaned: number; unbound: number }>('/proxies/clean-error', { method: 'POST' }),
-  autoBalanceProxies: (data: { channel?: 'codex' | 'grok' | 'claude'; mode?: 'unbound' | 'all'; max_per_proxy?: number; proxy_ids?: number[] }) =>
+  autoBalanceProxies: (data: { channel?: UpstreamChannel; mode?: 'unbound' | 'all'; max_per_proxy?: number; proxy_ids?: number[] }) =>
     request<AutoBalanceProxiesResult>('/proxies/auto-balance', { method: 'POST', body: JSON.stringify(data) }),
   listProxyRiskScoringProfiles: () =>
     request<{ profiles: ProxyRiskScoringProfile[] }>('/proxy-risk-scoring/profiles'),

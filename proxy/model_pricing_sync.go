@@ -188,7 +188,7 @@ func convertModelsDevPricing(providers map[string]modelsDevProvider) map[string]
 	out := make(map[string]database.ModelPricingOverride, len(models))
 	for _, exactPass := range []bool{true, false} {
 		for _, id := range ids {
-			key := database.CanonicalBillingModelKey(id)
+			key := database.PricingManagementModelKey(id)
 			if key == "" || models[id].Cost == nil {
 				continue
 			}

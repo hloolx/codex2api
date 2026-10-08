@@ -57,7 +57,7 @@ func SyncOfficialModelPricing(ctx context.Context, db *database.DB, proxyURL str
 	allowed := make(map[string]struct{})
 	var grokModels []string
 	for _, model := range options.Models {
-		key := database.CanonicalBillingModelKey(model)
+		key := database.PricingManagementModelKey(model)
 		if key == "" {
 			continue
 		}
@@ -357,7 +357,49 @@ func ParseXAIOfficialPricingMarkdown(body []byte) (map[string]database.ModelPric
 	if len(out) == 0 {
 		return nil, fmt.Errorf("未找到 xAI Text API Pricing 表")
 	}
+	for model, override := range parseXAIImaginePricingMarkdown(body) {
+		out[model] = override
+	}
 	return out, nil
+}
+
+// parseXAIImaginePricingMarkdown 读取 xAI 价目页的 Imagine 表(生图 $/image、
+// 生视频 $/sec),写入媒体上游单位成本。单位与模型计费单位不符的行跳过,
+// 避免价目页改版后把按张价当成按秒价。
+func parseXAIImaginePricingMarkdown(body []byte) map[string]database.ModelPricingOverride {
+	out := make(map[string]database.ModelPricingOverride)
+	scanner := bufio.NewScanner(strings.NewReader(string(body)))
+	inTable := false
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if !inTable {
+			inTable = line == "### Imagine Pricing"
+			continue
+		}
+		if !strings.HasPrefix(line, "|") {
+			if len(out) > 0 && line != "" {
+				break
+			}
+			continue
+		}
+		cells := splitMarkdownRow(line)
+		if len(cells) < 2 || isMarkdownSeparatorRow(cells) || strings.EqualFold(cells[0], "Model") {
+			continue
+		}
+		model := database.GrokMediaPricingKey(cells[0])
+		unit := database.MediaBillingUnit(model)
+		if unit == "" {
+			continue
+		}
+		cost := strings.ToLower(cells[1])
+		if (unit == database.MediaUnitImage && !strings.Contains(cost, "/ image")) || (unit == database.MediaUnitSecond && !strings.Contains(cost, "/ sec")) {
+			continue
+		}
+		if price := parseOfficialPrice(cells[1]); price > 0 {
+			out[model] = database.ModelPricingOverride{MediaUnitCost: price}
+		}
+	}
+	return out
 }
 
 func splitMarkdownRow(line string) []string {
@@ -390,7 +432,7 @@ func normalizeOfficialPricingModel(value string) string {
 	if idx := strings.Index(value, " ("); idx >= 0 {
 		value = value[:idx]
 	}
-	return database.CanonicalBillingModelKey(value)
+	return database.PricingManagementModelKey(value)
 }
 
 // projectClaudeOfficialPricing maps account-advertised Claude models onto the

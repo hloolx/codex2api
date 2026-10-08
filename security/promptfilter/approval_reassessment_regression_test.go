@@ -45,7 +45,7 @@ func TestClosedApprovalReassessmentDoesNotRecursivelyBlockTranscript(t *testing.
 		name := map[bool]string{false: "fresh", true: "delta"}[delta]
 		t.Run(name, func(t *testing.T) {
 			envelope := mappedAutoReviewEnvelope(approvalReassessmentFixture(delta, transcript, action))
-			classified, kind := classifyKnownApplicationPrompt(envelope, GuardModeEnforce)
+			classified, kind := classifyKnownApplicationPrompt(envelope, GuardModeEnforce, defaultApprovalReviewModels)
 			if kind != "approval_reassessment" {
 				t.Fatalf("kind = %q, want approval_reassessment", kind)
 			}
@@ -105,7 +105,7 @@ func TestApprovalReassessmentFailsClosedOnTemplateOrModelDrift(t *testing.T) {
 
 	for name, envelope := range tests {
 		t.Run(name, func(t *testing.T) {
-			classified, kind := classifyKnownApplicationPrompt(envelope, GuardModeEnforce)
+			classified, kind := classifyKnownApplicationPrompt(envelope, GuardModeEnforce, defaultApprovalReviewModels)
 			if kind != "" || classified.Segments[0].Origin != OriginCurrentUser {
 				t.Fatalf("malformed approval template was trusted: kind=%q segment=%+v", kind, classified.Segments[0])
 			}

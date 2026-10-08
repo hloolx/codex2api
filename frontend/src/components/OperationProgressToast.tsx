@@ -6,9 +6,12 @@ import type { OperationProgressState } from "../hooks/useOperationProgress";
 export default function OperationProgressToast({
   progress,
   onClose,
+  closable = true,
 }: {
   progress: OperationProgressState | null;
   onClose: () => void;
+  // 后台导入进行中不提供关闭，避免误以为任务已经停掉。
+  closable?: boolean;
 }) {
   const { t } = useTranslation();
   if (!progress?.show) return null;
@@ -90,14 +93,18 @@ export default function OperationProgressToast({
             {progress.current}/{progress.total || 0}
           </div>
         </div>
-        <button
-          type="button"
-          className="rounded-md p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-          onClick={onClose}
-          aria-label={t("common.close")}
-        >
-          <X className="size-4" />
-        </button>
+        {closable ? (
+          <button
+            type="button"
+            className="rounded-md p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+            onClick={onClose}
+            aria-label={t("common.close")}
+          >
+            <X className="size-4" />
+          </button>
+        ) : (
+          <span className="size-6 shrink-0" />
+        )}
       </div>
 
       <div className="mt-3 h-2 overflow-hidden rounded-full bg-muted">

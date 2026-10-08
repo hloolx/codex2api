@@ -58,6 +58,7 @@ All API errors follow this structure:
 | `server_error` | Internal server error |
 | `service_unavailable` | Service temporarily unavailable |
 | `no_available_account` | No account is currently available for dispatch |
+| `account_pool_concurrency_saturated` | Matching accounts exist, but every concurrency slot is occupied |
 | `upstream_error` | Error from upstream service |
 | `upstream_timeout` | Request to upstream timed out |
 

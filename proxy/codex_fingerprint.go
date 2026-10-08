@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
-	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -20,6 +19,10 @@ import (
 // 使上游看到的「设备数 / 会话数」收敛，而不是随共享该账号的下游用户数增长。
 // 档位语义见 auth/codex_fingerprint_mode.go。
 //
+// single_machine_multi_window preserves real conversation/subagent topology and
+// aligns session/thread headers. See codex_fingerprint_modes.go. No fixed window
+// pool or fabricated subagents are used; existing turn IDs/timestamps survive.
+// The following historical constraints describe the original four modes.
 // 收敛面严格限定在两个载体：
 //   - X-Codex-Turn-Metadata 请求头里的 JSON（本项目按白名单原样透传，见
 //     codexAllowedForwardHeaders，客户端真实标识由此泄漏）
@@ -111,7 +114,7 @@ const (
 // 相同而仍聚集在账号存在期附近。全程只依赖账号加入时间和种子，不引入 time.Now，因此
 // 保持"同种子恒定、无需落库"的性质。
 func codexIdentityUnixMilli(account *auth.Account, seed string) int64 {
-	base := atomic.LoadInt64(&account.AddedAt) / int64(time.Millisecond)
+	base := account.AddedAt.Load() / int64(time.Millisecond)
 	if base <= 0 {
 		base = codexIdentityFallbackEpochMilli
 	}
@@ -188,6 +191,23 @@ func resolveCodexFingerprintIDs(account *auth.Account, downstreamHeaders http.He
 		return ids
 	}
 
+	if mode == auth.CodexFingerprintModeSingleMachineMultiWindow {
+		clientSession, clientThread := extractClientCodexIdentity(downstreamHeaders)
+		if clientSession == "" {
+			clientSession = clientThread
+		}
+		if clientThread == "" {
+			clientThread = clientSession
+		}
+		// Missing identity must not collapse every anonymous request into one thread.
+		if clientSession == "" {
+			return nil
+		}
+		ids.sessionID = singleMachineIdentity(accountID, clientSession)
+		ids.threadID = singleMachineIdentity(accountID, clientThread)
+		ids.windowID = ids.threadID + ":0"
+		return ids
+	}
 	sessionSeed := fmt.Sprintf("codex2api:codex-session-id:v1:%d", accountID)
 	ids.sessionID = deriveStableCodexUUIDv7(sessionSeed, codexIdentityUnixMilli(account, sessionSeed))
 	ids.threadID = ids.sessionID
@@ -299,7 +319,7 @@ func ApplyCodexFingerprintHeaders(outbound http.Header, account *auth.Account, d
 	if ids.mode != auth.CodexFingerprintModeDevice && downstreamHeaders != nil {
 		if original := strings.TrimSpace(downstreamHeaders.Get(codexParentThreadIDHeader)); original != "" {
 			overrideExistingHeader(outbound, downstreamHeaders, codexParentThreadIDHeader,
-				convergeCodexLineageValue(ids.accountID, "parent_thread_id", original))
+				convergeFingerprintLineageValue(ids, "parent_thread_id", original))
 		}
 	}
 }
@@ -374,6 +394,10 @@ func ApplyCodexFingerprintToBody(body []byte, account *auth.Account, downstreamH
 	}
 
 	body = setExistingJSONString(body, "client_metadata.x-codex-installation-id", ids.installationID)
+	if ids.mode == auth.CodexFingerprintModeSingleMachineMultiWindow {
+		body = setExistingJSONString(body, "client_metadata.installation_id", ids.installationID)
+		body = rewriteSingleMachineBodyLineage(body, ids)
+	}
 	if ids.mode != auth.CodexFingerprintModeDevice {
 		body = setExistingJSONString(body, "client_metadata.session_id", ids.sessionID)
 		body = setExistingJSONString(body, "client_metadata.thread_id", ids.threadID)
@@ -426,7 +450,7 @@ func rewriteCodexTurnMetadataJSON(raw string, ids *codexFingerprintIDs) (string,
 		changed = true
 	}
 	if ids.mode != auth.CodexFingerprintModeDevice {
-		if rewritten, ok := convergeCodexLineageMetadata(raw, ids.accountID); ok {
+		if rewritten, ok := convergeFingerprintLineageMetadata(raw, ids); ok {
 			raw = rewritten
 			changed = true
 		}

@@ -39,7 +39,7 @@ func TestFetchOpenAIResponsesModelIDsSupportsV1BaseURL(t *testing.T) {
 	}))
 	defer server.Close()
 
-	models, err := fetchOpenAIResponsesModelIDs(context.Background(), server.URL+"/v1", "sk-test", "", nil)
+	models, err := fetchOpenAIResponsesModelIDs(context.Background(), nil, server.URL+"/v1", "sk-test", "", nil)
 	if err != nil {
 		t.Fatalf("fetchOpenAIResponsesModelIDs returned error: %v", err)
 	}
@@ -61,7 +61,7 @@ func TestFetchOpenAIResponsesModelIDsAppliesCustomHeadersLast(t *testing.T) {
 	}))
 	defer server.Close()
 
-	models, err := fetchOpenAIResponsesModelIDs(context.Background(), server.URL, "sk-test", "", map[string]string{
+	models, err := fetchOpenAIResponsesModelIDs(context.Background(), nil, server.URL, "sk-test", "", map[string]string{
 		"User-Agent":              "codex-tui/custom",
 		"X-Codex-Installation-Id": "custom-installation",
 	})
@@ -85,7 +85,7 @@ func TestFetchOpenAIResponsesModelIDsRejectsConfiguredOversizeBody(t *testing.T)
 	}))
 	defer server.Close()
 
-	_, err := fetchOpenAIResponsesModelIDs(context.Background(), server.URL, "sk-test", "", nil)
+	_, err := fetchOpenAIResponsesModelIDs(context.Background(), nil, server.URL, "sk-test", "", nil)
 	if !errors.Is(err, proxy.ErrModelsListResponseTooLarge) {
 		t.Fatalf("error = %v, want ErrModelsListResponseTooLarge", err)
 	}

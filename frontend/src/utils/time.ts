@@ -1,4 +1,7 @@
 import i18n from '../i18n'
+import { readTimezonePreference, resolveDisplayTimezone, writeTimezonePreference } from '../lib/displayTimezone'
+
+export { AUTO_DISPLAY_TIMEZONE } from '../lib/displayTimezone'
 
 export interface RelativeTimeOptions {
   variant?: 'long' | 'compact'
@@ -55,32 +58,48 @@ export function formatRelativeTime(dateStr?: string | null, options: RelativeTim
     : i18n.t('common.daysAgoLong', { count: days })
 }
 
-const TIMEZONE_STORAGE_KEY = 'codex2api_timezone'
-const DEFAULT_TIMEZONE = 'Asia/Shanghai'
-
-/** 获取用户选择的时区，默认 Asia/Shanghai */
+/** 当前生效的显示时区(IANA)。未保存选择或选择"自动"时跟随浏览器时区,取不到则 UTC。 */
 export function getTimezone(): string {
-  try {
-    return localStorage.getItem(TIMEZONE_STORAGE_KEY) || DEFAULT_TIMEZONE
-  } catch {
-    return DEFAULT_TIMEZONE
-  }
+  return resolveDisplayTimezone()
 }
 
-/** 设置时区并持久化到 localStorage */
+/** 已保存的显示时区偏好:IANA 名称,或 AUTO_DISPLAY_TIMEZONE 表示跟随浏览器。 */
+export function getTimezonePreference(): string {
+  return readTimezonePreference()
+}
+
+/** 保存显示时区偏好到 localStorage;传 AUTO_DISPLAY_TIMEZONE 清除保存值(跟随浏览器)。 */
 export function setTimezone(tz: string): void {
-  try {
-    localStorage.setItem(TIMEZONE_STORAGE_KEY, tz)
-  } catch { /* 忽略 */ }
+  writeTimezonePreference(tz)
+  dateTimeFormatters.clear()
+}
+
+const dateTimeFormatters = new Map<string, Intl.DateTimeFormat>()
+
+function dateTimeFormatter(timeZone: string): Intl.DateTimeFormat {
+  let fmt = dateTimeFormatters.get(timeZone)
+  if (!fmt) {
+    fmt = new Intl.DateTimeFormat('sv-SE', {
+      timeZone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hourCycle: 'h23',
+    })
+    dateTimeFormatters.set(timeZone, fmt)
+  }
+  return fmt
 }
 
 /**
- * Format a date string as Beijing time (UTC+8)
- * Output format: YYYY-MM-DD HH:mm:ss
+ * 以当前显示时区格式化时间,输出 YYYY-MM-DD HH:mm:ss。
  *
- * 使用 Intl.DateTimeFormat 以用户选择的时区格式化，
- * 无论后端返回的是 UTC（带 Z）还是带时区偏移（+08:00），都能正确显示，
- * 避免手动加减偏移导致的重复转换问题。
+ * 函数名沿用历史命名;实际使用 getTimezone() 返回的显示时区,不固定为北京时间。
+ * 使用 Intl.DateTimeFormat 换算,无论后端返回 UTC(带 Z)还是带偏移(+08:00)都能正确显示,
+ * 避免手动加减偏移导致的重复转换。
  */
 export function formatBeijingTime(dateStr?: string | null, fallback = '-'): string {
   if (!dateStr) return fallback
@@ -88,17 +107,6 @@ export function formatBeijingTime(dateStr?: string | null, fallback = '-'): stri
   const date = new Date(dateStr)
   if (Number.isNaN(date.getTime())) return fallback
 
-  const fmt = new Intl.DateTimeFormat('sv-SE', {
-    timeZone: getTimezone(),
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    hour12: false,
-  })
-
   // sv-SE locale 输出格式为 "YYYY-MM-DD HH:mm:ss"，正好是目标格式
-  return fmt.format(date)
+  return dateTimeFormatter(getTimezone()).format(date)
 }

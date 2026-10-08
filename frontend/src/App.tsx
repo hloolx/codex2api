@@ -30,6 +30,7 @@ const PromptFilter = lazy(() => import('./pages/PromptFilter'))
 const ThemeSettings = lazy(() => import('./pages/ThemeSettings'))
 const ModelPricing = lazy(() => import('./pages/ModelPricing'))
 const PayloadRules = lazy(() => import('./pages/PayloadRules'))
+const ChannelMonitor = lazy(() => import('./pages/ChannelMonitor'))
 
 export default function App() {
   return (
@@ -81,6 +82,7 @@ function AdminApp() {
           <Route path="/ops/errors" element={<OperationsErrors />} />
           <Route path="/ops/scheduler" element={<SchedulerBoard />} />
           <Route path="/usage" element={<Usage />} />
+          <Route path="/channel-monitor" element={<ChannelMonitor />} />
           <Route path="/model-pricing" element={<ModelPricing />} />
           <Route path="/payload-rules" element={<Navigate to="/payload-rules/editor" replace />} />
           <Route path="/payload-rules/:view" element={<PayloadRules />} />

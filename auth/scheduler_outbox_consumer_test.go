@@ -206,14 +206,14 @@ func TestApplyPersistentAccountSnapshotPreservesRuntimeState(t *testing.T) {
 	store := newIndexedRoutingTestStore(nil)
 	dst := newFastSchedulerTestAccount(1, HealthTierWarm, 100, 1)
 	dst.usageObservedAt = time.Now()
-	atomic.StoreInt64(&dst.ActiveRequests, 3)
+	dst.ActiveRequests.Store(3)
 	dst.SuccessStreak = 5
 	src := newFastSchedulerTestAccount(1, HealthTierHealthy, 100, 1)
 	src.CredentialGeneration = dst.CredentialGeneration
 
 	store.applyPersistentAccountSnapshot(dst, src, true)
-	if atomic.LoadInt64(&dst.ActiveRequests) != 3 || dst.SuccessStreak != 5 {
-		t.Fatalf("runtime state clobbered: active=%d streak=%d", atomic.LoadInt64(&dst.ActiveRequests), dst.SuccessStreak)
+	if dst.ActiveRequests.Load() != 3 || dst.SuccessStreak != 5 {
+		t.Fatalf("runtime state clobbered: active=%d streak=%d", dst.ActiveRequests.Load(), dst.SuccessStreak)
 	}
 	if dst.usageObservedAt.IsZero() {
 		t.Fatal("persistent snapshot should not erase a newer runtime observation timestamp")

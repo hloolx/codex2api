@@ -16,8 +16,8 @@ import (
 // 用它而不是在测试里把压缩关掉：关掉等于让整套 HTTP 路径测试绕开默认配置，
 // 那条路径上的改写逻辑就再也没有被真实形态覆盖过。
 //
-// 函数是幂等的：没有 Content-Encoding 时原样返回，因此对不压缩的链路
-// （grok / admin / WS 等）替换后语义不变。
+// 函数是幂等的：没有 Content-Encoding 时原样返回。Grok OAuth 的大请求体
+// 也会走 zstd，假上游同样用这里解压后再断言 JSON。
 func readUpstreamRequestBody(r *http.Request) []byte {
 	if r == nil || r.Body == nil {
 		return nil

@@ -114,7 +114,7 @@ func TestCommitResponsesStreamAttemptClearsStagedTurnStateOnReplayFailure(t *tes
 	ctx, _ := gin.CreateTestContext(recorder)
 	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
 	ctx.Header(codexTurnStateHeader, "staged-token")
-	err := (&Handler{}).commitResponsesStreamAttempt(ctx, attempt, "affinity", nil, http.Header{codexTurnStateHeader: []string{"staged-token"}})
+	err := (&Handler{}).commitResponsesStreamAttempt(ctx, attempt, "affinity", nil, "gpt-test", http.Header{codexTurnStateHeader: []string{"staged-token"}})
 	if !errors.Is(err, errContinuousRetryReplayStorage) {
 		t.Fatalf("commit error = %v, want replay storage error", err)
 	}

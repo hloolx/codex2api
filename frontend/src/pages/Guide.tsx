@@ -273,7 +273,7 @@ export default function Guide() {
   const [curlTab, setCurlTab] = useState<'responses' | 'chat' | 'messages'>('responses')
 
   useEffect(() => {
-    api.getAPIKeys().then((res) => {
+    api.getAPIKeys({ view: 'lite' }).then((res) => {
       const keys = (res.keys ?? []).map((item) => ({ name: item.name, key: item.raw_key || item.key }))
       setApiKeys(keys)
       if (keys[0]) setSelectedKey(keys[0].key)

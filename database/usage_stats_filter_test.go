@@ -90,3 +90,85 @@ func TestGetUsageStatsFilteredNarrowsRangeFieldsKeepsTotals(t *testing.T) {
 		t.Fatal("different dimension filters must have different keys")
 	}
 }
+
+// 回归:搜索词不应命中账号凭据 JSON(如模型目录)。
+// 真实环境里账号 credentials 含 "gpt-5.6-*" 模型目录,旧实现把
+// CAST(credentials AS TEXT) 纳入 LIKE,导致搜 "5.6" 时该账号的 gpt-6-*、
+// gpt-5.5 等不含搜索词的日志全部被带入搜索结果与统计卡片。
+func TestUsageLogSearchIgnoresAccountCredentials(t *testing.T) {
+	db, err := New("sqlite", filepath.Join(t.TempDir(), "search-cred.db"))
+	if err != nil {
+		t.Fatalf("New(sqlite): %v", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+
+	// 账号 A 凭据含 5.6 模型目录(旧实现会命中 credentials LIKE),账号 B 凭据干净。
+	accA, err := db.InsertAccountWithCredentials(ctx, "acc-a@example.com", map[string]interface{}{
+		"models": []string{"codex-auto-review", "gpt-5.5", "gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-6-astra", "gpt-6-sol"},
+	}, "")
+	if err != nil {
+		t.Fatalf("InsertAccountWithCredentials(A): %v", err)
+	}
+	accB, err := db.InsertAccountWithCredentials(ctx, "acc-b@example.com", map[string]interface{}{
+		"models": []string{"gpt-6-astra", "gpt-6-luna"},
+	}, "")
+	if err != nil {
+		t.Fatalf("InsertAccountWithCredentials(B): %v", err)
+	}
+
+	logs := []*UsageLogInput{
+		{AccountID: accA, APIKeyID: 10, Endpoint: "/v1/responses", Model: "gpt-5.6-sol", StatusCode: 200, TotalTokens: 1000},
+		{AccountID: accA, APIKeyID: 10, Endpoint: "/v1/responses", Model: "gpt-6-sol", StatusCode: 200, TotalTokens: 2000},
+		{AccountID: accB, APIKeyID: 11, Endpoint: "/v1/responses", Model: "gpt-6-astra", StatusCode: 200, TotalTokens: 500},
+		{AccountID: accB, APIKeyID: 11, Endpoint: "/v1/responses", Model: "gpt-5.5", StatusCode: 200, TotalTokens: 300},
+	}
+	for _, input := range logs {
+		if err := db.InsertUsageLog(ctx, input); err != nil {
+			t.Fatalf("InsertUsageLog: %v", err)
+		}
+	}
+	db.flushLogs()
+
+	now := time.Now()
+	start, end := now.Add(-time.Hour), now.Add(time.Hour)
+
+	// 搜 "5.6":只应命中 gpt-5.6-sol 一条,不得因账号凭据含 "5.6" 带入 gpt-6-*/gpt-5.5。
+	byQuery, err := db.GetUsageStatsFiltered(ctx, start, end, "", UsageLogFilter{Query: "5.6"}, true)
+	if err != nil {
+		t.Fatalf("GetUsageStatsFiltered(query=5.6): %v", err)
+	}
+	if byQuery.TodayRequests != 1 || byQuery.TodayTokens != 1000 {
+		t.Fatalf("query 5.6 today=%d tokens=%d, want 1/1000", byQuery.TodayRequests, byQuery.TodayTokens)
+	}
+	if len(byQuery.ModelStats) != 1 || byQuery.ModelStats[0].Model != "gpt-5.6-sol" {
+		t.Fatalf("query 5.6 model stats = %+v, want only gpt-5.6-sol", byQuery.ModelStats)
+	}
+
+	// 分页日志(用量页列表)同样只返回含 "5.6" 的记录。
+	page, err := db.ListUsageLogsByTimeRangePaged(ctx, UsageLogFilter{Start: start, End: end, Query: "5.6", Page: 1, PageSize: 50})
+	if err != nil {
+		t.Fatalf("ListUsageLogsByTimeRangePaged(query=5.6): %v", err)
+	}
+	if page.Total != 1 || len(page.Logs) != 1 || page.Logs[0].Model != "gpt-5.6-sol" {
+		t.Fatalf("paged q=5.6 total=%d rows=%d first=%q, want 1/1/gpt-5.6-sol",
+			page.Total, len(page.Logs), firstUsageLogModel(page.Logs))
+	}
+
+	// 按账号名/邮箱搜索仍然有效(name 匹配保留)。
+	byName, err := db.GetUsageStatsFiltered(ctx, start, end, "", UsageLogFilter{Query: "acc-a@example.com"}, true)
+	if err != nil {
+		t.Fatalf("GetUsageStatsFiltered(query=account name): %v", err)
+	}
+	if byName.TodayRequests != 2 {
+		t.Fatalf("query by account name today=%d, want 2", byName.TodayRequests)
+	}
+}
+
+func firstUsageLogModel(logs []*UsageLog) string {
+	if len(logs) > 0 {
+		return logs[0].Model
+	}
+	return ""
+}

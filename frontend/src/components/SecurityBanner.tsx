@@ -31,7 +31,7 @@ export default function SecurityBanner() {
 
   const refresh = useCallback(async () => {
     try {
-      const res = await api.getAPIKeys()
+      const res = await api.getAPIKeys({ view: 'lite' })
       setKeyCount((res.keys ?? []).length)
     } catch {
       setKeyCount(null) // 401/网络异常时不显示，避免登录前打扰

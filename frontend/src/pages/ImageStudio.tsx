@@ -696,7 +696,7 @@ export default function ImageStudio() {
     setLoading(true)
     try {
       const [keysRes] = await Promise.all([
-        api.getAPIKeys(),
+        api.getAPIKeys({ view: 'lite' }),
         loadTemplates(),
         loadJobs(),
       ])
@@ -799,20 +799,25 @@ export default function ImageStudio() {
 
   useEffect(() => {
     if (!currentJob || !['queued', 'running'].includes(currentJob.status)) return
+    let cancelled = false
+    let polling = false
     const timer = window.setInterval(async () => {
+      if (polling || document.visibilityState !== 'visible') return
+      polling = true
       try {
         const res = await api.getImageJob(currentJob.id, {
-          includeCache: true,
+          includeCache: false,
         })
+        if (cancelled) return
         setCurrentJob(res.job)
         if (!['queued', 'running'].includes(res.job.status)) {
           await Promise.all([loadJobs(), loadAssets(), loadTemplates(), loadHistoryJobs()])
         }
       } catch {
         // keep polling quiet; the visible job state is enough context
-      }
-    }, 2500)
-    return () => window.clearInterval(timer)
+      } finally { polling = false }
+    }, 4000)
+    return () => { cancelled = true; window.clearInterval(timer) }
   }, [currentJob, loadAssets, loadHistoryJobs, loadJobs, loadTemplates])
 
   const promptForAsset = useCallback((asset: ImageAsset) => {
@@ -1013,8 +1018,15 @@ export default function ImageStudio() {
     }
   }
 
-  const rerunFromJob = (job: ImageGenerationJob) => {
+  const rerunFromJob = async (summary: ImageGenerationJob) => {
+    let job: ImageGenerationJob
+    try { job = (await api.getImageJob(summary.id, { summary: false })).job }
+    catch (err) { showToast(err instanceof Error ? err.message : t('images.loadFailed'), 'error'); return }
+
     const params = jobParams(job)
+    if (params.input_images?.some(value => value.startsWith('queue-input:'))) {
+      showToast('参考图临时文件已清理，请重新选择参考图后生成', 'error'); return
+    }
     const nextModel = params.model || 'gpt-image-2'
     const nextSize = normalizeImageSizeForModel(nextModel, params.size || 'auto')
     const isEditJob = params.input_images && params.input_images.length > 0
@@ -1156,7 +1168,7 @@ export default function ImageStudio() {
       }
       if (currentJob?.assets?.some(item => item.id === asset.id)) {
         const res = await api.getImageJob(currentJob.id, {
-          includeCache: true,
+          includeCache: false,
         })
         setCurrentJob(res.job)
       }
@@ -1687,7 +1699,7 @@ export default function ImageStudio() {
   const selectHistoryJob = (job: ImageGenerationJob) => {
     setCurrentJob(job)
     navigate('/images/studio')
-    void api.getImageJob(job.id, { includeCache: true }).then(res => setCurrentJob(res.job)).catch(() => {
+    void api.getImageJob(job.id, { includeCache: false }).then(res => setCurrentJob(res.job)).catch(() => {
       // The selected history row is already enough if the refresh fails.
     })
   }

@@ -73,7 +73,8 @@ func resinMaintenanceTarget(account *auth.Account, targetURL string) (finalURL s
 
 // BuildReverseProxyURL 将目标 URL 转换为 Resin 反向代理 URL
 // 例如: https://chatgpt.com/backend-api/codex/responses
-//     → http://127.0.0.1:2260/my-token/codex2api/https/chatgpt.com/backend-api/codex/responses
+//
+//	→ http://127.0.0.1:2260/my-token/codex2api/https/chatgpt.com/backend-api/codex/responses
 func BuildReverseProxyURL(targetURL string) string {
 	cfg := GetResinConfig()
 	if cfg == nil {
@@ -96,7 +97,8 @@ func BuildReverseProxyURL(targetURL string) string {
 
 // BuildWebSocketURL 将目标 WSS URL 转换为 Resin WS 反向代理 URL
 // 例如: wss://chatgpt.com/backend-api/codex/responses
-//     → ws://127.0.0.1:2260/my-token/codex2api/https/chatgpt.com/backend-api/codex/responses
+//
+//	→ ws://127.0.0.1:2260/my-token/codex2api/https/chatgpt.com/backend-api/codex/responses
 //
 // Resin 约定: 客户端到 Resin 只支持 ws://；路径中 protocol 填 http/https 对应目标 ws/wss
 func BuildWebSocketURL(targetURL string) string {

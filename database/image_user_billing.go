@@ -20,26 +20,41 @@ func SupportsImageBilling(model string) bool {
 }
 
 func ValidateModelUserBilling(model string, o ModelPricingOverride) error {
-	if o.UserBillingMode != "" && o.UserBillingMode != UserBillingModeToken && o.UserBillingMode != UserBillingModePerImage {
-		return fmt.Errorf("user_billing_mode must be token or per_image")
+	switch o.UserBillingMode {
+	case "", UserBillingModeToken, UserBillingModePerImage, UserBillingModePerVideo, UserBillingModePerSecond:
+	default:
+		return fmt.Errorf("user_billing_mode must be token, per_image, per_video or per_second")
 	}
 	if math.IsNaN(o.ImageUnitPrice) || math.IsInf(o.ImageUnitPrice, 0) || o.ImageUnitPrice < 0 {
 		return fmt.Errorf("image_unit_price must be a finite non-negative USD amount")
 	}
-	if o.UserBillingMode == UserBillingModePerImage {
+	if math.IsNaN(o.MediaUnitCost) || math.IsInf(o.MediaUnitCost, 0) || o.MediaUnitCost < 0 {
+		return fmt.Errorf("media_unit_cost must be a finite non-negative USD amount")
+	}
+	if o.MediaUnitCost > 0 && MediaBillingUnit(model) == "" {
+		return fmt.Errorf("media_unit_cost requires a Grok Imagine media model")
+	}
+	switch o.UserBillingMode {
+	case UserBillingModePerImage:
 		if !SupportsImageBilling(model) {
 			return fmt.Errorf("per_image billing requires an image model")
 		}
-		if o.ImageUnitPrice <= 0 {
-			return fmt.Errorf("image_unit_price must be greater than zero for per_image billing")
+	case UserBillingModePerVideo, UserBillingModePerSecond:
+		if MediaBillingUnit(model) != MediaUnitSecond {
+			return fmt.Errorf("%s billing requires a video model", o.UserBillingMode)
 		}
+	}
+	if IsUnitUserBillingMode(o.UserBillingMode) && o.ImageUnitPrice <= 0 {
+		return fmt.Errorf("image_unit_price must be greater than zero for %s billing", o.UserBillingMode)
 	}
 	return nil
 }
 
-// UserBilling records the policy and successful image count at settlement time.
-// Empty mode identifies legacy rows; an explicit per_image zero is never replaced
-// with upstream token cost when displaying failed/undelivered outputs.
+// UserBilling records the policy and successful billed units at settlement time.
+// Empty mode identifies legacy rows; an explicit unit-mode zero is never replaced
+// with upstream cost when displaying failed/undelivered outputs.
+// ImageUnitPrice / BilledImageCount 沿用历史列名,语义是"单位价 / 计费单位数":
+// per_image 为张,per_video 为次,per_second 为秒。
 type UserBilling struct {
 	UserBillingMode  string  `json:"user_billing_mode"`
 	ImageUnitPrice   float64 `json:"image_unit_price"`
@@ -61,20 +76,24 @@ func SnapshotUsageLogBilling(input *UsageLogInput) *UsageLogInput {
 	if model == "" {
 		model = input.Model
 	}
-	if !SupportsImageBilling(model) {
+	mediaUnit := MediaBillingUnit(model)
+	if !SupportsImageBilling(model) && mediaUnit == "" {
 		return input
 	}
 	p := GetModelPricing(model)
 	mode := UserBillingModeToken
-	if p.UserBillingMode == UserBillingModePerImage && p.ImageUnitPrice > 0 {
-		mode = UserBillingModePerImage
+	if IsUnitUserBillingMode(p.UserBillingMode) && p.ImageUnitPrice > 0 {
+		switch {
+		case p.UserBillingMode == UserBillingModePerImage && SupportsImageBilling(model):
+			mode = p.UserBillingMode
+		case p.UserBillingMode != UserBillingModePerImage && mediaUnit == MediaUnitSecond:
+			mode = p.UserBillingMode
+		}
 	}
 	snapshot := &usageBillingSnapshot{UserBilling: UserBilling{UserBillingMode: mode}, accountCost: UsageLogBilledCost(input)}
-	if mode == UserBillingModePerImage {
+	if mode != UserBillingModeToken {
 		snapshot.ImageUnitPrice = p.ImageUnitPrice
-		if input.StatusCode >= 200 && input.StatusCode < 300 && !input.IsRetryAttempt && input.ErrorMessage == "" {
-			snapshot.BilledImageCount = max(0, input.ImageCount)
-		}
+		snapshot.BilledImageCount = userBillingUnits(input, mode)
 	}
 	copy := *input
 	copy.billingSnapshot = snapshot
@@ -107,7 +126,7 @@ func UsageLogUserBilledCost(input *UsageLogInput) float64 {
 		return 0
 	}
 	if s := input.billingSnapshot; s != nil {
-		if s.UserBillingMode == UserBillingModePerImage {
+		if IsUnitUserBillingMode(s.UserBillingMode) {
 			return float64(s.BilledImageCount) * s.ImageUnitPrice
 		}
 		return s.accountCost

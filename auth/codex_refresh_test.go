@@ -204,7 +204,10 @@ func TestCodexRefreshRetriesPersistenceWithoutRepeatingOAuth(t *testing.T) {
 	function := fmt.Sprintf("codex_test_save_fault_once(%d)", faultID)
 	var calls atomic.Int32
 	store, db, id, path := codexRefreshFixture(t, func(w http.ResponseWriter, _ *http.Request) { calls.Add(1); writeCodexRefreshedTokens(w) })
-	injector, err := sql.Open("sqlite", path)
+	// The trigger is dropped while the store may hold the WAL write lock. A
+	// raw connection has no busy timeout and fails with SQLITE_BUSY instead
+	// of waiting, which leaves the trigger in place past the retry budget.
+	injector, err := sql.Open("sqlite", "file:"+path+"?_pragma=busy_timeout(5000)")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -308,6 +311,18 @@ func TestCodexRefreshBackgroundEligibility(t *testing.T) {
 	claude := &Account{RefreshToken: "rt", ExpiresAt: time.Now(), UpstreamType: UpstreamClaude, Disabled: 1, HealthTier: HealthTierHealthy}
 	if !store.shouldBackgroundRefresh(claude, false) {
 		t.Fatal("Codex change altered legacy Claude refresh policy")
+	}
+	for _, tc := range []struct {
+		name             string
+		disabled, paused int32
+		want             bool
+	}{
+		{"grok enabled", 0, 0, true}, {"grok disabled", 1, 0, false}, {"grok paused", 0, 1, false},
+	} {
+		grok := &Account{RefreshToken: "rt", ExpiresAt: time.Now(), UpstreamType: UpstreamGrok, HealthTier: HealthTierHealthy, Disabled: tc.disabled, DispatchPaused: tc.paused}
+		if got := store.shouldBackgroundRefresh(grok, false); got != tc.want {
+			t.Fatalf("%s: eligible=%t, want %t", tc.name, got, tc.want)
+		}
 	}
 	for _, tc := range []struct {
 		name, upstream, reason string

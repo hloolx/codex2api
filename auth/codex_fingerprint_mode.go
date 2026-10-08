@@ -7,12 +7,15 @@ import "strings"
 // 判定这一个账号背后有多少台设备、多少个会话。收敛模式把这些标识改写成账号级
 // 恒定值，让上游看到的设备/会话数收敛到接近单人使用的形态。
 //
-// 只影响出站请求里的 x-codex-turn-metadata 头和请求体 client_metadata；
-// 出站 Session_id 头由 resolveUpstreamSessionID 独立决定，收敛不参与，
-// 因此 prompt cache 隔离行为和 isolate_requests_by_default 设置不受影响。
+// Legacy modes only rewrite identity metadata. Session identity convergence also aligns
+// session/thread headers while leaving gateway prompt-cache partitioning intact.
+// No mode is enabled implicitly for existing accounts.
 const (
 	// CodexFingerprintModeOff 不做任何收敛，客户端标识原样透传（默认）。
 	CodexFingerprintModeOff = "off"
+	// CodexFingerprintModeSingleMachineMultiWindow shares a device, not a conversation.
+	// Real windows and child threads retain distinct deterministic identities.
+	CodexFingerprintModeSingleMachineMultiWindow = "single_machine_multi_window"
 	// CodexFingerprintModeDevice 仅把 installation_id 收敛为账号级恒定值。
 	// 上游看到 1 台设备 + 每个下游用户各自的会话。
 	CodexFingerprintModeDevice = "device"
@@ -32,6 +35,8 @@ const CodexFingerprintModeCredentialKey = "codex_fingerprint_mode"
 // 保证既有账号在升级后出站行为完全不变，必须显式配置才启用收敛。
 func NormalizeCodexFingerprintMode(value string) string {
 	switch strings.ToLower(strings.TrimSpace(value)) {
+	case CodexFingerprintModeSingleMachineMultiWindow:
+		return CodexFingerprintModeSingleMachineMultiWindow
 	case CodexFingerprintModeDevice:
 		return CodexFingerprintModeDevice
 	case CodexFingerprintModeSession:
@@ -43,10 +48,10 @@ func NormalizeCodexFingerprintMode(value string) string {
 	}
 }
 
-// IsValidCodexFingerprintMode 报告取值是否为四个已知档位之一。
+// IsValidCodexFingerprintMode reports whether the mode is known.
 func IsValidCodexFingerprintMode(value string) bool {
 	switch strings.ToLower(strings.TrimSpace(value)) {
-	case CodexFingerprintModeOff, CodexFingerprintModeDevice, CodexFingerprintModeSession, CodexFingerprintModeFull:
+	case CodexFingerprintModeOff, CodexFingerprintModeSingleMachineMultiWindow, CodexFingerprintModeDevice, CodexFingerprintModeSession, CodexFingerprintModeFull:
 		return true
 	default:
 		return false

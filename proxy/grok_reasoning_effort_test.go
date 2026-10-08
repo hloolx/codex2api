@@ -1,8 +1,10 @@
 package proxy
 
 import (
+	"net/http"
 	"testing"
 
+	"github.com/codex2api/auth"
 	"github.com/tidwall/gjson"
 )
 
@@ -11,6 +13,8 @@ func TestGrokSupportsXHighReasoningEffort(t *testing.T) {
 		model string
 		want  bool
 	}{
+		{"grok-4.7", true},
+		{"grok-4.7-beta", true},
 		{"grok-4.6", true},
 		{"GROK-4.6", true},
 		{"grok-4.6-beta", true},
@@ -47,6 +51,8 @@ func TestClampGrokReasoningEffort(t *testing.T) {
 		{"4.5 xhigh→high", `{"model":"grok-4.5","reasoning":{"effort":"xhigh"}}`, "reasoning.effort", "high"},
 		{"4.5 max→high", `{"model":"grok-4.5","reasoning":{"effort":"max"}}`, "reasoning.effort", "high"},
 		{"4.6 xhigh stays", `{"model":"grok-4.6","reasoning":{"effort":"xhigh"}}`, "reasoning.effort", "xhigh"},
+		{"4.7 xhigh stays", `{"model":"grok-4.7","reasoning":{"effort":"xhigh"}}`, "reasoning.effort", "xhigh"},
+		{"4.7 max→xhigh", `{"model":"grok-4.7","reasoning":{"effort":"max"}}`, "reasoning.effort", "xhigh"},
 		{"4.6-beta xhigh stays", `{"model":"grok-4.6-beta","reasoning":{"effort":"xhigh"}}`, "reasoning.effort", "xhigh"},
 		{"4.6-build xhigh stays", `{"model":"grok-4.6-build","reasoning":{"effort":"xhigh"}}`, "reasoning.effort", "xhigh"},
 		{"4.20-multi-agent xhigh stays", `{"model":"grok-4.20-multi-agent","reasoning":{"effort":"xhigh"}}`, "reasoning.effort", "xhigh"},
@@ -101,5 +107,64 @@ func TestPrepareGrokUpstreamBodyPassesXHighForGrok46(t *testing.T) {
 	old := prepareGrokUpstreamBody([]byte(`{"reasoning":{"effort":"xhigh"},"model":"grok-4.5"}`))
 	if effort := gjson.GetBytes(old.Body, "reasoning.effort").String(); effort != "high" {
 		t.Fatalf("4.5 effort = %q, want high; body=%s", effort, old.Body)
+	}
+}
+
+func TestGrokConversationGroupIDMatchesBuildDerivation(t *testing.T) {
+	const root = "0f4c7a1e-6c1b-5a0e-8e6c-3b0f6a6a2a1d"
+	if got := grokConversationGroupID(root); got != "d5de345a-3509-59bc-b73c-7d33029d840b" {
+		t.Fatalf("conversation group id = %q", got)
+	}
+	req, err := http.NewRequest(http.MethodPost, "https://cli-chat-proxy.grok.com/v1/responses", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	headers := make(http.Header)
+	headers.Set("Session-Id", root)
+	applyGrokRequestHeaders(req, &auth.Account{DBID: 1, UpstreamType: auth.UpstreamGrok, AccessToken: "at"}, "tok", headers, nil)
+	if got := req.Header.Get("x-grok-conv-id"); got != root {
+		t.Fatalf("conv-id = %q", got)
+	}
+	if got := req.Header.Get("x-grok-conv-group-id"); got != "d5de345a-3509-59bc-b73c-7d33029d840b" {
+		t.Fatalf("conv-group-id = %q", got)
+	}
+}
+
+func TestCatalogReasoningMenuForwardsListedTiers(t *testing.T) {
+	account := &auth.Account{UpstreamType: auth.UpstreamGrok, AccessToken: "at", CredentialGeneration: 1}
+	account.SetGrokRoutingState(auth.GrokRoutingState{
+		CredentialGeneration: 1,
+		Models: []auth.GrokModelRoute{{
+			ModelID:          "grok-4.7",
+			APIBackend:       auth.GrokProtocolResponses,
+			ReasoningEfforts: []string{"max", "xhigh", "high", "medium", "low", "minimal"},
+		}},
+	})
+	menu := account.GrokReasoningMenu("grok-4.7")
+	body := []byte(`{"model":"grok-4.7","reasoning":{"effort":"max"}}`)
+	got := prepareGrokUpstreamBodyWithCompaction(body, nil, menu)
+	if effort := gjson.GetBytes(got.Body, "reasoning.effort").String(); effort != "max" {
+		t.Fatalf("listed max = %q, want max; body=%s", effort, got.Body)
+	}
+	limited := prepareGrokUpstreamBodyWithCompaction([]byte(`{"model":"grok-4.7","reasoning":{"effort":"xhigh"}}`), nil, []string{"high", "medium", "low"})
+	if effort := gjson.GetBytes(limited.Body, "reasoning.effort").String(); effort != "high" {
+		t.Fatalf("unlisted xhigh = %q, want high; body=%s", effort, limited.Body)
+	}
+	heuristic := prepareGrokUpstreamBody([]byte(`{"model":"grok-4.7","reasoning":{"effort":"max"}}`))
+	if effort := gjson.GetBytes(heuristic.Body, "reasoning.effort").String(); effort != "xhigh" {
+		t.Fatalf("no menu max = %q, want xhigh; body=%s", effort, heuristic.Body)
+	}
+
+	route := GrokUpstreamRoute{
+		Model:         "grok-4.7",
+		Protocol:      GrokProtocolChatCompletions,
+		ReasoningMenu: []string{"minimal", "low", "medium", "high"},
+	}
+	chat, err := prepareRoutedGrokProtocolRequest(route, GrokProtocolChatCompletions, []byte(`{"model":"grok-4.7","messages":[{"role":"user","content":"hi"}],"reasoning_effort":"minimal"}`), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if effort := gjson.GetBytes(chat.Body, "reasoning_effort").String(); effort != "minimal" {
+		t.Fatalf("chat minimal = %q, want minimal; body=%s", effort, chat.Body)
 	}
 }

@@ -58,6 +58,7 @@ func (h *Handler) CodexModelsManifestHandler(c *gin.Context) {
 		h.store.ResolveProxyForAccount(account),
 		c.Query("client_version"),
 		ifNoneMatch,
+		c.Request.Header,
 	)
 	if err != nil {
 		if h.serveScopedCodexManifest(c, row) {
@@ -152,7 +153,8 @@ func (h *Handler) extraRelayManifestModels(ctx context.Context, row *database.AP
 		if record == nil {
 			continue
 		}
-		if record.backing&(modelBackingRelay|modelBackingGrok|modelBackingAntigravity) == 0 {
+		_, daybreak := auth.ParseDaybreakAlias(record.id)
+		if record.backing&(modelBackingRelay|modelBackingGrok|modelBackingAntigravity) == 0 && daybreak == "" {
 			continue
 		}
 		extras = append(extras, api.Model{ID: record.id, Object: "model", OwnedBy: scopedModelOwner(record)})
@@ -452,15 +454,18 @@ type CodexModelsManifest struct {
 // 响应体原样透传，不在本地解析或维护清单：manifest schema 随 Codex 客户端版本
 // 演进，透传使网关无需跟进 schema 变化，且返回的始终是账号真实的模型权限
 // （区别于内置模型注册表的"理论列表"）。
-func FetchCodexModelsManifest(ctx context.Context, account *auth.Account, proxyURL, clientVersion, ifNoneMatch string) (*CodexModelsManifest, error) {
+//
+// downstream 是下游透传请求的原始头（后台拉取传 nil），只在统一身份开关开启时参与
+// 出站身份解析，规则与对话请求一致。
+func FetchCodexModelsManifest(ctx context.Context, account *auth.Account, proxyURL, clientVersion, ifNoneMatch string, downstream http.Header) (*CodexModelsManifest, error) {
 	endpoint := CodexModelsManifestURL
 	if codexModelsManifestURLForTest != "" {
 		endpoint = codexModelsManifestURLForTest
 	}
-	return fetchCodexModelsManifestWithURL(ctx, account, proxyURL, endpoint, clientVersion, ifNoneMatch)
+	return fetchCodexModelsManifestWithURL(ctx, account, proxyURL, endpoint, clientVersion, ifNoneMatch, downstream)
 }
 
-func fetchCodexModelsManifestWithURL(ctx context.Context, account *auth.Account, proxyURL, endpoint, clientVersion, ifNoneMatch string) (*CodexModelsManifest, error) {
+func fetchCodexModelsManifestWithURL(ctx context.Context, account *auth.Account, proxyURL, endpoint, clientVersion, ifNoneMatch string, downstream http.Header) (*CodexModelsManifest, error) {
 	if account == nil {
 		return nil, fmt.Errorf("account is nil")
 	}
@@ -469,9 +474,21 @@ func fetchCodexModelsManifestWithURL(ctx context.Context, account *auth.Account,
 		return nil, fmt.Errorf("account has no access token")
 	}
 
+	// UA 版本段、Version 头与 client_version query 三者保持同一版本，避免出站身份
+	// 自相矛盾。统一身份开启时三者都取解析出的身份版本：清单按 client_version 过滤
+	// 模型，对话请求以该版本出站，清单也必须按同一版本拿。
+	identity := ResolveCodexMaintenanceIdentity(account, downstream)
+	userAgent := ""
+	if identity.Unified {
+		clientVersion = firstNonEmptyString(identity.Version, clientVersion)
+		userAgent = identity.UserAgent
+	}
 	clientVersion = strings.TrimSpace(clientVersion)
 	if clientVersion == "" {
 		clientVersion = effectiveLatestCodexCLIVersion()
+	}
+	if userAgent == "" {
+		userAgent = replaceCodexUserAgentVersion(defaultCodexCLIUserAgent, clientVersion)
 	}
 	requestURL := endpoint + "?client_version=" + url.QueryEscape(clientVersion)
 
@@ -483,10 +500,8 @@ func fetchCodexModelsManifestWithURL(ctx context.Context, account *auth.Account,
 	}
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 	req.Header.Set("Accept", "application/json")
-	// UA 版本段与 Version 头、client_version query 三者保持同一版本，
-	// 避免出站身份自相矛盾（UA 钉内置常量、Version 跟随同步值）。
-	req.Header.Set("User-Agent", replaceCodexUserAgentVersion(defaultCodexCLIUserAgent, clientVersion))
-	req.Header.Set("Originator", Originator)
+	req.Header.Set("User-Agent", userAgent)
+	req.Header.Set("Originator", identity.Originator)
 	req.Header.Set("Version", clientVersion)
 	if ifNoneMatch = strings.TrimSpace(ifNoneMatch); ifNoneMatch != "" {
 		req.Header.Set("If-None-Match", ifNoneMatch)

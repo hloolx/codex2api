@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"fmt"
+	"math"
 	"net/http"
 	"sync"
 	"sync/atomic"
@@ -20,7 +21,7 @@ type apiKeyConcurrencyLimiter struct {
 }
 
 type apiKeyConcurrencyCounter struct {
-	inflight int64
+	inflight atomic.Int64
 }
 
 func newAPIKeyConcurrencyLimiter() *apiKeyConcurrencyLimiter {
@@ -34,11 +35,11 @@ func (l *apiKeyConcurrencyLimiter) acquire(apiKeyID int64, limit int) (func(), i
 	counter := l.counter(apiKeyID)
 	limit64 := int64(limit)
 	for {
-		current := atomic.LoadInt64(&counter.inflight)
+		current := counter.inflight.Load()
 		if current >= limit64 {
 			return nil, current, false
 		}
-		if atomic.CompareAndSwapInt64(&counter.inflight, current, current+1) {
+		if counter.inflight.CompareAndSwap(current, current+1) {
 			released := atomic.Bool{}
 			return func() {
 				if released.CompareAndSwap(false, true) {
@@ -64,8 +65,8 @@ func (l *apiKeyConcurrencyLimiter) release(counter *apiKeyConcurrencyCounter) {
 	if l == nil || counter == nil {
 		return
 	}
-	if current := atomic.AddInt64(&counter.inflight, -1); current < 0 {
-		atomic.StoreInt64(&counter.inflight, 0)
+	if current := counter.inflight.Add(-1); current < 0 {
+		counter.inflight.Store(0)
 	}
 }
 
@@ -94,11 +95,11 @@ func (h *Handler) acquireAPIKeyConcurrency(c *gin.Context) (func(), bool) {
 		}
 	}
 	row := apiKeyRowFromContext(c)
-	if row == nil || row.ID <= 0 || row.Limits.MaxConcurrency <= 0 {
+	if row == nil || row.ID <= 0 {
 		return nil, true
 	}
 	limiter := h.apiKeyConcurrencyLimiter()
-	release, current, ok := limiter.acquire(row.ID, row.Limits.MaxConcurrency)
+	release, current, ok := limiter.acquireTracked(row.ID, row.Limits.MaxConcurrency)
 	if ok {
 		return release, true
 	}
@@ -109,14 +110,37 @@ func (h *Handler) acquireAPIKeyConcurrency(c *gin.Context) (func(), bool) {
 
 func (h *Handler) acquireAPIKeyConcurrencyForWebSocket(c *gin.Context) (func(), *api.APIError, bool) {
 	row := apiKeyRowFromContext(c)
-	if row == nil || row.ID <= 0 || row.Limits.MaxConcurrency <= 0 {
+	if row == nil || row.ID <= 0 {
 		return nil, nil, true
 	}
 	limiter := h.apiKeyConcurrencyLimiter()
-	release, current, ok := limiter.acquire(row.ID, row.Limits.MaxConcurrency)
+	release, current, ok := limiter.acquireTracked(row.ID, row.Limits.MaxConcurrency)
 	if ok {
 		return release, nil, true
 	}
 	msg := fmt.Sprintf("API key concurrency limit exceeded: %d inflight requests (max %d)", current, row.Limits.MaxConcurrency)
 	return nil, api.NewAPIError(api.ErrCodeRateLimitReached, msg, api.ErrorTypeRateLimit), false
+}
+
+// acquireTracked 为不限并发的密钥保留计数，不改变限流器的旁路约定。
+func (l *apiKeyConcurrencyLimiter) acquireTracked(id int64, limit int) (func(), int64, bool) {
+	if limit <= 0 {
+		limit = math.MaxInt
+	}
+	return l.acquire(id, limit)
+}
+
+// APIKeyConcurrencySnapshot 返回当前进程中各密钥的并发快照。
+func (h *Handler) APIKeyConcurrencySnapshot() map[int64]int64 {
+	result := make(map[int64]int64)
+	if h == nil {
+		return result
+	}
+	limiter := h.apiKeyConcurrencyLimiter()
+	limiter.mu.Lock()
+	defer limiter.mu.Unlock()
+	for id, counter := range limiter.counters {
+		result[id] = counter.inflight.Load()
+	}
+	return result
 }

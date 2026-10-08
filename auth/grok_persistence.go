@@ -64,6 +64,51 @@ func (a *Account) GrokDispatchHardAllowed(now time.Time) bool {
 	return !(a.GrokBillingExhausted && now.Before(a.GrokBillingExpiresAt))
 }
 
+// GrokPlanHint returns the best-known Grok plan key for non-authorization
+// decisions (free-quota cooldown scope, paid-first media routing). Current
+// xAI access tokens no longer carry a tier claim, so archives without
+// plan_type leave PlanType empty; the control-plane facts shown in the
+// account list fill that gap. Order: fresh /user tier, fresh settings display
+// tier, PlanType, then retained (stale) facts. Empty means unknown.
+func (a *Account) GrokPlanHint(now time.Time) string {
+	if a == nil {
+		return ""
+	}
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	stored := CanonicalGrokLivePlanFilter(a.PlanType)
+	if !a.isGrokAPILocked() {
+		return stored
+	}
+	if strings.TrimSpace(a.APIKey) != "" {
+		if stored == "" {
+			return "api"
+		}
+		return stored
+	}
+	var live, display string
+	var liveFresh, displayFresh bool
+	if a.GrokFactsGeneration == a.CredentialGeneration {
+		if a.GrokLivePlanKnown {
+			live = CanonicalGrokLivePlanFilter(a.GrokLivePlan)
+			liveFresh = now.Before(a.GrokLivePlanExpiresAt)
+		}
+		display = CanonicalGrokLivePlanFilter(a.GrokDisplayPlan)
+		displayFresh = now.Before(a.GrokDisplayPlanExpiresAt)
+	}
+	switch {
+	case live != "" && liveFresh:
+		return live
+	case display != "" && displayFresh:
+		return display
+	case stored != "":
+		return stored
+	case live != "":
+		return live
+	}
+	return display
+}
+
 // applyGrokPersistentState projects only generation-matching, non-secret DB
 // observations into one runtime account. Caller invokes this before publishing
 // the account, so no account lock is needed.
@@ -77,6 +122,8 @@ func applyGrokPersistentState(account *Account, state *database.GrokAccountState
 	account.GrokLivePlanObservedAt = time.Time{}
 	account.GrokLivePlanExpiresAt = time.Time{}
 	account.GrokLivePlanKnown = false
+	account.GrokDisplayPlan = ""
+	account.GrokDisplayPlanExpiresAt = time.Time{}
 	account.GrokAccessAllowed = nil
 	account.GrokAccessExpiresAt = time.Time{}
 	account.GrokBillingExhausted = false
@@ -101,6 +148,10 @@ func applyGrokPersistentState(account *Account, state *database.GrokAccountState
 		}
 	}
 	if settings, ok := state.Facts[database.GrokFactSettings]; ok && settings.CredentialGeneration == state.CredentialGeneration {
+		if plan := grokFactString(settings.Payload, "subscription_tier_display", "subscriptionTierDisplay"); plan != "" {
+			account.GrokDisplayPlan = plan
+			account.GrokDisplayPlanExpiresAt = settings.ExpiresAt
+		}
 		presence := settings.FieldPresence["allow_access"]
 		if presence == "value" || presence == "present" || presence == "" {
 			if value, exists := grokFactBool(settings.Payload, "allow_access", "allowAccess"); exists {
@@ -147,6 +198,7 @@ func applyGrokPersistentState(account *Account, state *database.GrokAccountState
 				APIBackend: NormalizeGrokProtocol(item.APIBackend), ExtraHeaders: item.ExtraHeaders,
 				SupportedInAPI: supported, Hidden: item.Hidden, ContextWindow: item.ContextWindow,
 				MaxCompletionTokens: item.MaxOutputTokens, SupportsReasoningEffort: item.SupportsReasoningEffort,
+				ReasoningEffort: item.ReasoningEffort, ReasoningEfforts: NormalizeGrokReasoningMenu(item.ReasoningEfforts),
 				SupportsBackendSearch: item.SupportsBackendSearch, StreamToolCalls: item.StreamToolCalls,
 				FirstSeenAt: item.FirstSeenAt,
 			})
@@ -229,6 +281,8 @@ func (a *Account) invalidateGrokPersistentStateLocked(newGeneration int64) {
 	a.GrokLivePlanObservedAt = time.Time{}
 	a.GrokLivePlanExpiresAt = time.Time{}
 	a.GrokLivePlanKnown = false
+	a.GrokDisplayPlan = ""
+	a.GrokDisplayPlanExpiresAt = time.Time{}
 	a.GrokAccessAllowed = nil
 	a.GrokAccessExpiresAt = time.Time{}
 	a.GrokBillingExhausted = false

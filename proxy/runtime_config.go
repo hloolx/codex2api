@@ -72,6 +72,10 @@ type RuntimeSettings struct {
 	CodexTelemetryEnabled bool
 	// CodexTelemetryTimingDebug 打开模拟遥测的临时计时探针（仅打日志，默认关闭）。
 	CodexTelemetryTimingDebug bool
+	// CodexUnifiedClientIdentityEnabled 让网关自发的 Codex 维护请求（用量探针、重置券、
+	// 订阅同步、模型清单、中转模型发现）与对话请求使用同一套配置身份，而不是内置的
+	// codex-tui 身份（默认关闭，issue #774）。见 ResolveCodexMaintenanceIdentity。
+	CodexUnifiedClientIdentityEnabled bool
 	// CodexImagesMainModel 为空时沿用环境变量或内置生图文本驱动模型。
 	CodexImagesMainModel  string
 	StreamFlushPolicy     string
@@ -136,13 +140,17 @@ type RuntimeSettings struct {
 	RequestIsolationMode string
 	// CodexSyncedCLIVersion 是从 openai/codex releases 同步到的最新 Codex CLI 版本；
 	// 用于抬升出站 UA / manifest 的模拟版本，绝不低于内置常量，空表示未同步。
-	CodexSyncedCLIVersion string
+	CodexSyncedCLIVersion          string
+	CodexSyncedDesktopMacBuild     string
+	CodexSyncedDesktopWindowsBuild string
+	CodexSyncedVSCodeBuild         string
 	// CodexCLIVersionSyncEnabled 控制后台定时同步 Codex CLI 版本（默认 true）。
 	CodexCLIVersionSyncEnabled bool
 	// CodexCLIVersionSyncIntervalHours 定时同步间隔（小时，默认 12，范围 1-720）。
 	CodexCLIVersionSyncIntervalHours int
 	// AutoResetCreditsEnabled 控制 Plus/Pro 主动重置次数的临期自动消费（默认 false）。
-	AutoResetCreditsEnabled bool
+	AutoResetCreditsEnabled             bool
+	AutoResetCreditsOnExhaustionEnabled bool
 	// AutoResetCreditsBeforeExpiryMin 是进入自动消费窗口的提前分钟数（默认 60）。
 	AutoResetCreditsBeforeExpiryMin int
 	// AutoActivate5hWindowEnabled 控制 5h 窗口重置后是否发送一次最小真实 /responses 启动下一轮窗口（默认 false，issue #581）。
@@ -332,7 +340,7 @@ func NormalizeRuntimeSettings(settings RuntimeSettings) RuntimeSettings {
 	settings.AutoResetCreditsBeforeExpiryMin = database.NormalizeAutoResetCreditsBeforeExpiryMinutes(settings.AutoResetCreditsBeforeExpiryMin)
 	settings.UTLSShutdownTimeoutMin = database.NormalizeUTLSShutdownTimeoutMinutes(settings.UTLSShutdownTimeoutMin)
 	settings.ContinuousRetryPolicy = database.NormalizeContinuousRetryPolicy(settings.ContinuousRetryPolicy)
-	return settings
+	return codexRuntimeClientVersionProjections(settings)
 }
 
 func ApplyRuntimeSettingsFromSystem(settings *database.SystemSettings) RuntimeSettings {
@@ -346,6 +354,7 @@ func ApplyRuntimeSettingsFromSystem(settings *database.SystemSettings) RuntimeSe
 		next.CodexUserAgentConfig = settings.CodexUserAgentConfig
 		next.CodexTelemetryEnabled = settings.CodexTelemetryEnabled
 		next.CodexTelemetryTimingDebug = settings.CodexTelemetryTimingDebug
+		next.CodexUnifiedClientIdentityEnabled = settings.CodexUnifiedClientIdentityEnabled
 		next.CodexImagesMainModel = settings.CodexImagesMainModel
 		next.StreamFlushPolicy = settings.StreamFlushPolicy
 		next.StreamFlushIntervalMS = settings.StreamFlushIntervalMS
@@ -382,9 +391,13 @@ func ApplyRuntimeSettingsFromSystem(settings *database.SystemSettings) RuntimeSe
 		next.CodexContinueThinking = settings.CodexContinueThinkingEnabled
 		next.CodexContinueMaxRounds = settings.CodexContinueMaxRounds
 		next.CodexSyncedCLIVersion = settings.CodexSyncedCLIVersion
+		next.CodexSyncedDesktopMacBuild = settings.CodexSyncedDesktopMacBuild
+		next.CodexSyncedDesktopWindowsBuild = settings.CodexSyncedDesktopWindowsBuild
+		next.CodexSyncedVSCodeBuild = settings.CodexSyncedVSCodeBuild
 		next.CodexCLIVersionSyncEnabled = settings.CodexCLIVersionSyncEnabled
 		next.CodexCLIVersionSyncIntervalHours = settings.CodexCLIVersionSyncIntervalHours
 		next.AutoResetCreditsEnabled = settings.AutoResetCreditsEnabled
+		next.AutoResetCreditsOnExhaustionEnabled = settings.AutoResetCreditsOnExhaustionEnabled
 		next.AutoResetCreditsBeforeExpiryMin = settings.AutoResetCreditsBeforeExpiryMin
 		next.AutoActivate5hWindowEnabled = settings.AutoActivate5hWindowEnabled
 		next.UTLSShutdownTimeoutMin = settings.UTLSShutdownTimeoutMinutes
@@ -448,7 +461,6 @@ func currentFirstTokenTimeout() time.Duration {
 	}
 	return time.Duration(seconds) * time.Second
 }
-
 
 // codexContinueThinkingSettings 返回续想折叠开关与最大轮数（一次快照读取）。
 func codexContinueThinkingSettings() (bool, int) {

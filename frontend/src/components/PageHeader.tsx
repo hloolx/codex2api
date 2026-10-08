@@ -3,11 +3,23 @@ import { Button } from '@/components/ui/button'
 import { RefreshCw } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { cn } from '@/lib/utils'
+import { AutoRefreshButton } from './AutoRefreshButton'
+
+export interface PageHeaderAutoRefresh {
+  // 自动刷新回调；应静默刷新（不闪加载态），返回的 Promise 完成后才排下一轮。
+  onAutoRefresh: () => Promise<unknown>
+  // 可选间隔（秒），0 表示关闭。
+  intervals: readonly number[]
+  loadSeconds?: () => number
+  saveSeconds?: (seconds: number) => void
+}
 
 interface PageHeaderProps {
   title: string
   description?: string
   onRefresh?: () => void
+  // 提供时刷新按钮变为分裂按钮，下拉可选择自动刷新间隔。
+  autoRefresh?: PageHeaderAutoRefresh
   refreshLabel?: string
   actions?: ReactNode
   actionMeta?: ReactNode
@@ -25,6 +37,7 @@ export default function PageHeader({
   title,
   description,
   onRefresh,
+  autoRefresh,
   refreshLabel,
   actions,
   actionMeta,
@@ -73,7 +86,16 @@ export default function PageHeader({
           ) : null}
           <div className="flex min-w-0 flex-wrap items-center gap-1.5 sm:justify-end sm:gap-2">
             {actions}
-            {onRefresh ? (
+            {onRefresh && autoRefresh ? (
+              <AutoRefreshButton
+                onRefresh={onRefresh}
+                onAutoRefresh={autoRefresh.onAutoRefresh}
+                intervals={autoRefresh.intervals}
+                loadSeconds={autoRefresh.loadSeconds}
+                saveSeconds={autoRefresh.saveSeconds}
+                label={resolvedRefreshLabel}
+              />
+            ) : onRefresh ? (
               <Button
                 variant="outline"
                 size="sm"

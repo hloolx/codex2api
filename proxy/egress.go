@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"context"
 	"net/http"
 	"net/url"
 	"strings"
@@ -20,6 +21,7 @@ import (
 // 优先级固定为 Resin > 代理 > 直连,且 Resin 是整层覆盖:一旦启用,Codex 渠道
 // 所有携带账号身份的出站(/responses、compact、WS、wham 用量、订阅查询、遥测、
 // 令牌刷新)全部改经 Resin,第 2 层选出的代理只保留在日志/审计里、不参与拨号。
+// 显式模板刷新可通过 ResolveCodexRequestEgress 使用专属签发代理,不改变以上默认链路。
 // Claude / Grok / Antigravity 等中继型账号不经 Resin,继续走第 2 层。
 //
 // 所有 Codex 出站选客户端的地方都必须经过本文件的解析器,禁止各自再写
@@ -201,4 +203,12 @@ func MaskResinBaseURL(raw string) string {
 		masked += "/***"
 	}
 	return masked
+}
+
+// ResolveCodexRequestEgress picks the websocket or HTTP egress for one request.
+func ResolveCodexRequestEgress(_ context.Context, account *auth.Account, targetURL, proxyURL string, websocket bool) CodexEgress {
+	if websocket {
+		return ResolveCodexWebsocketEgress(account, targetURL, proxyURL)
+	}
+	return ResolveCodexEgress(account, targetURL, proxyURL)
 }

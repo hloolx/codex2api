@@ -31,9 +31,9 @@ type grokPreflightResult struct {
 }
 
 // grokDroppedTopLevelFields 是 Codex 管道注入、Grok 上游不接受的顶层字段。
+// prompt_cache_key 不在这里：官方 CLI 每次 /v1/responses 都带，上游用它钉住前缀缓存。
 var grokDroppedTopLevelFields = map[string]struct{}{
 	"client_metadata":   {},
-	"prompt_cache_key":  {},
 	"service_tier":      {},
 	"safety_identifier": {},
 }
@@ -43,15 +43,15 @@ var grokDroppedTopLevelFields = map[string]struct{}{
 // 钳制、无工具时撤掉 tool_choice，并顺带算出轮次序号与模型名。
 // 请求体非法 JSON 或顶层不是对象时原样返回，交由上游报错。
 func prepareGrokUpstreamBody(body []byte) grokPreflightResult {
-	return prepareGrokUpstreamBodyWithCompaction(body, nil)
+	return prepareGrokUpstreamBodyWithCompaction(body, nil, nil)
 }
 
-func prepareGrokUpstreamBodyWithCompaction(body []byte, preservedCompaction compactionProvenanceDigests) grokPreflightResult {
+func prepareGrokUpstreamBodyWithCompaction(body []byte, preservedCompaction compactionProvenanceDigests, reasoningMenu []string) grokPreflightResult {
 	if lifted, changed := liftGrokAdditionalTools(body); changed {
-		return prepareGrokUpstreamBodyWithCompaction(lifted, preservedCompaction)
+		return prepareGrokUpstreamBodyWithCompaction(lifted, preservedCompaction, reasoningMenu)
 	}
 	if guarded, changed := addGrokGiantToolInstructions(body); changed {
-		return prepareGrokUpstreamBodyWithCompaction(guarded, preservedCompaction)
+		return prepareGrokUpstreamBodyWithCompaction(guarded, preservedCompaction, reasoningMenu)
 	}
 	result := grokPreflightResult{Body: body, TurnIndex: 1}
 	if !gjson.ValidBytes(body) {
@@ -127,14 +127,14 @@ func prepareGrokUpstreamBodyWithCompaction(body []byte, preservedCompaction comp
 				return true
 			}
 		case "reasoning":
-			if patched, ok := grokClampReasoningObjectRaw(value, result.Model); ok {
+			if patched, ok := grokClampReasoningObjectRaw(value, result.Model, reasoningMenu); ok {
 				grokWriteObjectKey(&out, &first, key)
 				out.Write(patched)
 				changed = true
 				return true
 			}
 		case "reasoning_effort":
-			if mapped, ok := mapGrokReasoningEffort(value.String(), result.Model); ok {
+			if mapped, ok := mapGrokReasoningEffort(value.String(), result.Model, reasoningMenu); ok {
 				if encoded, err := json.Marshal(mapped); err == nil {
 					grokWriteObjectKey(&out, &first, key)
 					out.Write(encoded)
@@ -716,7 +716,8 @@ func grokDecodedItemIsUserMessage(item map[string]any) bool {
 }
 
 // grokClampReasoningObjectRaw 钳制 reasoning.effort，返回 (新对象 JSON, 是否改写)。
-func grokClampReasoningObjectRaw(reasoning gjson.Result, model string) ([]byte, bool) {
+// reasoningMenu 非空时按该账号目录折叠；空菜单保持版本启发式。
+func grokClampReasoningObjectRaw(reasoning gjson.Result, model string, reasoningMenu []string) ([]byte, bool) {
 	if !reasoning.IsObject() {
 		return nil, false
 	}
@@ -724,7 +725,7 @@ func grokClampReasoningObjectRaw(reasoning gjson.Result, model string) ([]byte, 
 	if !effort.Exists() {
 		return nil, false
 	}
-	mapped, ok := mapGrokReasoningEffort(effort.String(), model)
+	mapped, ok := mapGrokReasoningEffort(effort.String(), model, reasoningMenu)
 	if !ok {
 		return nil, false
 	}

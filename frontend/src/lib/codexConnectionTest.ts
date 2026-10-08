@@ -101,6 +101,17 @@ export function isFinalCodexTestDiagnostics(diagnostics?: CodexTestDiagnostics |
   return typeof diagnostics?.duration_ms === "number";
 }
 
+// 上游按客户端版本放行新模型:模拟版本过旧时返回这两类 400,同步到最新版本常可恢复。
+// 同一文案也会出现在模型确实未对账号开放的场景,所以只能作为"可能"提示。
+const CODEX_VERSION_GATE_PATTERNS = [
+  /model is not supported when using codex with a chatgpt account/i,
+  /requires a newer version of codex/i,
+];
+
+export function isCodexVersionGatedError(...texts: Array<string | null | undefined>): boolean {
+  return texts.some((text) => Boolean(text) && CODEX_VERSION_GATE_PATTERNS.some((pattern) => pattern.test(text!)));
+}
+
 export function formatCodexTestMS(value?: number): string {
   return typeof value === "number" && Number.isFinite(value) ? `${value.toLocaleString()} ms` : "—";
 }

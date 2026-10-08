@@ -1,4 +1,5 @@
 import { ImageBillingCost } from '../components/image-studio/ImageBillingCost'
+import { mediaBillingUnit } from '../lib/imageBilling'
 import { type FormEvent, type ReactNode, useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { NavLink, useNavigate, useParams } from 'react-router-dom'
@@ -8,36 +9,48 @@ import {
   AlertTriangle,
   BarChart3,
   Box,
-  Brain,
-  Clock,
+  CalendarClock,
   Clock3,
   CircleDollarSign,
   DatabaseZap,
   Eye,
   EyeOff,
+  Gauge,
+  History,
   Info,
+  InfinityIcon,
   KeyRound,
   Languages,
+  LayoutDashboard,
   Loader2,
   LogIn,
   LogOut,
   RefreshCw,
   Route,
+  ScrollText,
   ShieldCheck,
+  TriangleAlert,
+  Wallet,
+  X,
   Zap,
 } from 'lucide-react'
 import { api } from '../api'
 import { DEFAULT_SITE_LOGO, useBranding } from '../branding'
 import Pagination from '../components/Pagination'
 import CompactionBadges from '../components/CompactionBadges'
+import ChannelLogo from '../components/ChannelLogo'
+import ModelLogo from '../components/ModelLogo'
+import DisplayTimezoneSelect from '../components/DisplayTimezoneSelect'
 import APIKeyModelRequestUsageCard from '../components/APIKeyModelRequestUsage'
 import { usePersistedPageSize } from '../hooks/usePersistedPageSize'
 import type {
   APIKeyLimits,
   PublicAPIKeyUsageBreakdown,
   PublicAPIKeyUsageLog,
+  PublicAPIKeyUsageLogFilter,
   PublicAPIKeyUsageResponse,
   PublicAPIKeyWindowUsage,
+  UpstreamChannel,
 } from '../types'
 import { getErrorMessage } from '../utils/error'
 import { formatBeijingTime, formatRelativeTime } from '../utils/time'
@@ -46,6 +59,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
+import { Select } from '@/components/ui/select'
 import {
   Table,
   TableBody,
@@ -89,10 +103,11 @@ export default function APIKeyUsagePortal() {
   const [bootstrapping, setBootstrapping] = useState(() => Boolean(readStoredAPIKey().key))
   const [error, setError] = useState('')
   const [data, setData] = useState<PublicAPIKeyUsageResponse | null>(null)
+  const [logFilter, setLogFilter] = useState<PublicAPIKeyUsageLogFilter>({})
   const logoSrc = siteLogo || DEFAULT_SITE_LOGO
 
   // 已登录后的刷新/切换时间范围（沿用当前会话的 key）
-  const reload = async (nextRange = range, nextLogPage = logPage, nextLogPageSize = logPageSize) => {
+  const reload = async (nextRange = range, nextLogPage = logPage, nextLogPageSize = logPageSize, nextFilter = logFilter) => {
     if (!activeAPIKey) return
     setLoading(true)
     setError('')
@@ -100,6 +115,7 @@ export default function APIKeyUsagePortal() {
       const result = await api.getPublicAPIKeyUsage(activeAPIKey, nextRange, {
         page: nextLogPage,
         pageSize: nextLogPageSize,
+        ...nextFilter,
       })
       setData(result)
       const responsePage = result.usage.recent_logs_page || nextLogPage
@@ -191,6 +207,19 @@ export default function APIKeyUsagePortal() {
     void reload(range, 1, nextPageSize)
   }
 
+  const handleLogFilterChange = (patch: PublicAPIKeyUsageLogFilter) => {
+    const next = { ...logFilter, ...patch }
+    setLogFilter(next)
+    setLogPage(1)
+    void reload(range, 1, logPageSize, next)
+  }
+
+  const handleLogFilterReset = () => {
+    setLogFilter({})
+    setLogPage(1)
+    void reload(range, 1, logPageSize, {})
+  }
+
   // 非法的子路由回退到概览
   useEffect(() => {
     if (view && !USAGE_VIEWS.includes(view as UsageView)) {
@@ -205,6 +234,7 @@ export default function APIKeyUsagePortal() {
     setData(null)
     setError('')
     setLogPage(1)
+    setLogFilter({})
   }
 
   const summary = data?.usage.summary
@@ -222,6 +252,7 @@ export default function APIKeyUsagePortal() {
 
   const toolbar = (
     <div className="flex items-center gap-2">
+      <DisplayTimezoneSelect compact className="hidden w-[240px] sm:block" />
       <Button variant="outline" size="icon-sm" onClick={() => i18n.changeLanguage(i18n.language === 'zh' ? 'en' : 'zh')} title={t('common.themeStyle')}>
         <Languages className="size-4" />
       </Button>
@@ -310,65 +341,70 @@ export default function APIKeyUsagePortal() {
     )
   }
 
+  const controls = (
+    <div className="flex flex-wrap items-center gap-2">
+      <div className="inline-flex h-9 items-center rounded-lg border border-border bg-muted/50 p-0.5" role="group" aria-label={t('usage.tableTime')}>
+        {RANGE_OPTIONS.map((item) => (
+          <button
+            key={item}
+            type="button"
+            onClick={() => handleRangeChange(item)}
+            aria-pressed={range === item}
+            className={`h-8 rounded-md px-3 text-[13px] font-medium transition-all ${
+              range === item ? 'border border-border bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'
+            }`}
+          >
+            {t(`keyUsage.range.${item}`)}
+          </button>
+        ))}
+      </div>
+      <Button type="button" variant="outline" size="sm" disabled={loading} onClick={() => void reload()} className="h-9">
+        {loading ? <Loader2 className="size-3.5 animate-spin" /> : <RefreshCw className="size-3.5" />}
+        {t('common.refresh')}
+      </Button>
+      <Button type="button" variant="outline" size="sm" onClick={handleLogout} className="h-9">
+        <LogOut className="size-3.5" />
+        {t('common.logout')}
+      </Button>
+    </div>
+  )
+
   return (
-    <div className="min-h-dvh bg-background text-foreground">
+    <div className="relative min-h-dvh bg-background text-foreground">
+      <div
+        aria-hidden="true"
+        className="pointer-events-none absolute inset-x-0 top-0 h-[420px] opacity-60 [background:radial-gradient(70%_60%_at_50%_-20%,color-mix(in_oklab,var(--color-primary)_12%,transparent),transparent_70%)]"
+      />
       <header className="sticky top-0 z-20 border-b border-border bg-card/80 backdrop-blur">
-        <div className="mx-auto flex max-w-[1600px] flex-wrap items-center justify-between gap-3 px-4 py-3 sm:px-6">
+        <div className="mx-auto grid max-w-[1600px] grid-cols-[minmax(0,1fr)_auto] items-center gap-x-4 gap-y-2.5 px-4 py-2.5 sm:px-6 md:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)]">
           <div className="flex min-w-0 items-center gap-3">
-            <img src={logoSrc} alt={siteName} className="size-9 rounded-lg object-cover shadow-sm" />
+            <img src={logoSrc} alt={siteName} className="size-9 rounded-lg object-cover shadow-sm ring-1 ring-border/60" />
             <div className="min-w-0">
               <h1 className="truncate text-base font-semibold text-foreground">{t('keyUsage.title')}</h1>
               <div className="truncate text-xs text-muted-foreground">{siteName}</div>
             </div>
           </div>
-          {toolbar}
+          <UsageTabs activeView={activeView} className="col-span-2 row-start-2 md:col-span-1 md:col-start-2 md:row-start-1 md:w-[440px]" />
+          <div className="justify-self-end md:col-start-3 md:row-start-1">{toolbar}</div>
         </div>
       </header>
 
-      <main className="mx-auto max-w-[1600px] space-y-5 px-4 py-5 sm:px-6">
-        {/* 工具条：当前 key + 时间范围 + 刷新 + 退出 */}
-        <Card className="py-0">
-          <CardContent className="flex flex-wrap items-center justify-between gap-3 p-3.5">
-            <div className="flex min-w-0 items-center gap-2.5">
-              <div className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-primary/12 text-primary">
-                <KeyRound className="size-4" />
+      <main className="relative mx-auto max-w-[1600px] space-y-5 px-4 py-5 sm:px-6">
+        {data ? (
+          <QuotaHero data={data} quotaPercent={quotaPercent} controls={controls} />
+        ) : (
+          <Card className="py-0">
+            <CardContent className="flex flex-wrap items-center justify-between gap-3 p-3.5">
+              <div className="flex min-w-0 items-center gap-2.5">
+                <div className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-primary/12 text-primary">
+                  <KeyRound className="size-4" />
+                </div>
+                <div className="truncate text-sm font-semibold text-foreground">{t('keyUsage.keyCard')}</div>
               </div>
-              <div className="min-w-0">
-                <div className="truncate text-sm font-semibold text-foreground">{data?.key.name || t('keyUsage.keyCard')}</div>
-                {data ? (
-                  <div className="flex items-center gap-1.5">
-                    <span className="truncate font-mono text-xs text-muted-foreground">{data.key.key}</span>
-                    <StatusPill status={data.key.status} label={t(`apiKeys.status.${data.key.status}`)} />
-                  </div>
-                ) : null}
-              </div>
-            </div>
-            <div className="flex flex-wrap items-center gap-2">
-              <div className="inline-flex h-9 items-center rounded-lg border border-border bg-muted/50 p-0.5">
-                {RANGE_OPTIONS.map((item) => (
-                  <button
-                    key={item}
-                    type="button"
-                    onClick={() => handleRangeChange(item)}
-                    className={`h-8 rounded-md px-3 text-[13px] font-medium transition-all ${
-                      range === item ? 'border border-border bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'
-                    }`}
-                  >
-                    {t(`keyUsage.range.${item}`)}
-                  </button>
-                ))}
-              </div>
-              <Button type="button" variant="outline" size="sm" disabled={loading} onClick={() => void reload()} className="h-9">
-                {loading ? <Loader2 className="size-3.5 animate-spin" /> : <RefreshCw className="size-3.5" />}
-                {t('common.refresh')}
-              </Button>
-              <Button type="button" variant="outline" size="sm" onClick={handleLogout} className="h-9">
-                <LogOut className="size-3.5" />
-                {t('common.logout')}
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
+              {controls}
+            </CardContent>
+          </Card>
+        )}
         {error ? (
           <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
             {error}
@@ -377,8 +413,6 @@ export default function APIKeyUsagePortal() {
 
         {data && summary ? (
           <div className="space-y-5">
-            <UsageTabs activeView={activeView} />
-            <APIKeyModelRequestUsageCard items={data.model_request_usage ?? []} />
 
             {/* 概览：核心指标 + 模型/端点分布 */}
             {activeView === 'overview' ? (
@@ -428,10 +462,13 @@ export default function APIKeyUsagePortal() {
 
             {/* 额度与限额：配额 + 窗口用量 + 限额 */}
             {activeView === 'quota' ? (
-              <div className="grid gap-5 lg:grid-cols-2 xl:grid-cols-3">
-                <QuotaCard data={data} quotaPercent={quotaPercent} />
-                <WindowUsageCard limits={data.key.limits} windows={data.usage.windows} />
-                <LimitsCard limits={data.key.limits} />
+              <div className="space-y-5">
+                <div className="grid gap-5 lg:grid-cols-2 xl:grid-cols-3">
+                  <KeyInfoCard data={data} />
+                  <WindowUsageCard limits={data.key.limits} windows={data.usage.windows} />
+                  <LimitsCard limits={data.key.limits} />
+                </div>
+                <APIKeyModelRequestUsageCard items={data.model_request_usage ?? []} />
               </div>
             ) : null}
 
@@ -439,6 +476,12 @@ export default function APIKeyUsagePortal() {
             {activeView === 'logs' ? (
               <RecentLogsTable
                 logs={data.usage.recent_logs}
+                filter={logFilter}
+                modelOptions={data.usage.log_models ?? data.usage.models.map((item) => item.name)}
+                endpointOptions={data.usage.log_endpoints ?? data.usage.endpoints.map((item) => item.name)}
+                loading={loading}
+                onFilterChange={handleLogFilterChange}
+                onFilterReset={handleLogFilterReset}
                 page={recentLogsPage}
                 totalPages={recentLogsTotalPages}
                 totalItems={recentLogsTotal}
@@ -456,42 +499,41 @@ export default function APIKeyUsagePortal() {
 }
 
 // ============================================================================
-// UsageTabs —— 复刻生图工作台的分段标签，按 URL 切换概览/额度/日志
+// UsageTabs —— 顶栏内的分段标签，按 URL 切换概览/额度/日志
 // ============================================================================
-function UsageTabs({ activeView }: { activeView: UsageView }) {
+function UsageTabs({ activeView, className = '' }: { activeView: UsageView; className?: string }) {
   const { t } = useTranslation()
-  const tabs: Array<{ view: UsageView; label: string }> = [
-    { view: 'overview', label: t('keyUsage.views.overview') },
-    { view: 'quota', label: t('keyUsage.views.quota') },
-    { view: 'logs', label: t('keyUsage.views.logs') },
+  const tabs: Array<{ view: UsageView; label: string; icon: ReactNode }> = [
+    { view: 'overview', label: t('keyUsage.views.overview'), icon: <LayoutDashboard /> },
+    { view: 'quota', label: t('keyUsage.views.quota'), icon: <Gauge /> },
+    { view: 'logs', label: t('keyUsage.views.logs'), icon: <ScrollText /> },
   ]
   const activeIndex = Math.max(0, tabs.findIndex((tab) => tab.view === activeView))
 
   return (
-    <div className="flex justify-center">
+    <div
+      className={`relative grid grid-cols-3 rounded-xl border border-border bg-muted/50 p-0.5 ${className}`}
+      role="tablist"
+      aria-label={t('keyUsage.title')}
+    >
       <div
-        className="relative grid w-full max-w-[480px] grid-cols-3 rounded-2xl border border-border bg-card/80 p-1 shadow-sm backdrop-blur-lg"
-        role="tablist"
-        aria-label={t('keyUsage.title')}
-      >
-        <div
-          className="pointer-events-none absolute left-1 top-1 h-[calc(100%-0.5rem)] rounded-xl border border-primary/15 bg-primary/8 transition-transform duration-300 ease-out"
-          style={{ width: 'calc((100% - 0.5rem) / 3)', transform: `translateX(${activeIndex * 100}%)` }}
-        />
-        {tabs.map((tab) => (
-          <NavLink
-            key={tab.view}
-            to={`/key-usage/${tab.view}`}
-            role="tab"
-            aria-selected={activeView === tab.view}
-            className={`relative z-10 flex h-9 items-center justify-center rounded-xl px-3 text-sm font-semibold transition-colors ${
-              activeView === tab.view ? 'text-primary' : 'text-muted-foreground hover:text-foreground'
-            }`}
-          >
-            {tab.label}
-          </NavLink>
-        ))}
-      </div>
+        className="pointer-events-none absolute left-0.5 top-0.5 h-[calc(100%-0.25rem)] rounded-[10px] border border-border bg-background shadow-sm transition-transform duration-300 ease-out motion-reduce:transition-none"
+        style={{ width: 'calc((100% - 0.25rem) / 3)', transform: `translateX(${activeIndex * 100}%)` }}
+      />
+      {tabs.map((tab) => (
+        <NavLink
+          key={tab.view}
+          to={`/key-usage/${tab.view}`}
+          role="tab"
+          aria-selected={activeView === tab.view}
+          className={`relative z-10 flex h-8 min-w-0 items-center justify-center gap-1.5 rounded-[10px] px-2.5 text-[13px] font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [&_svg]:size-3.5 [&_svg]:shrink-0 ${
+            activeView === tab.view ? 'text-primary' : 'text-muted-foreground hover:text-foreground'
+          }`}
+        >
+          {tab.icon}
+          <span className="truncate">{tab.label}</span>
+        </NavLink>
+      ))}
     </div>
   )
 }
@@ -624,33 +666,233 @@ function EmptyPanel({ accent, icon, text }: { accent: AccentKey; icon: ReactNode
   )
 }
 
-function QuotaCard({ data, quotaPercent }: { data: PublicAPIKeyUsageResponse; quotaPercent: number }) {
+function KeyInfoCard({ data }: { data: PublicAPIKeyUsageResponse }) {
   const { t } = useTranslation()
-  const hasQuota = data.key.quota_limit > 0
+  const { key } = data
   return (
     <PanelShell>
-      <PanelHeader accent="emerald" icon={<CircleDollarSign />} title={t('keyUsage.quota')} />
-      <div className="space-y-4">
-        {hasQuota ? (
-          <div>
-            <div className="mb-1.5 flex items-baseline justify-between gap-3 text-sm">
-              <span className="font-semibold tabular-nums text-foreground">{formatUSD(data.key.quota_used)}</span>
-              <span className="text-xs text-muted-foreground">/ {formatUSD(data.key.quota_limit)}</span>
-            </div>
-            <AccentBar accent={quotaPercent >= 90 ? 'amber' : 'emerald'} ratio={quotaPercent / 100} thickness="h-2" minWidth={2} />
-            <div className="mt-1 text-right text-[11px] tabular-nums text-muted-foreground">{formatPercent(quotaPercent)}</div>
-          </div>
-        ) : (
-          <div className="rounded-lg border border-border bg-muted/30 px-3 py-2 text-sm text-muted-foreground">{t('apiKeys.unlimited')}</div>
-        )}
-        <div className="grid grid-cols-2 gap-2">
-          <InfoTile label={t('common.createdAt')} value={formatBeijingTime(data.key.created_at)} />
-          <InfoTile label={t('apiKeys.expiresColumn')} value={data.key.expires_at ? formatBeijingTime(data.key.expires_at) : t('apiKeys.neverExpires')} />
-          <InfoTile label={t('keyUsage.resetCount')} value={formatNumber(data.key.reset_count)} />
-          <InfoTile label={t('keyUsage.lastReset')} value={data.key.last_reset_at ? formatRelativeTime(data.key.last_reset_at, { variant: 'compact' }) : '-'} />
-        </div>
+      <PanelHeader accent="emerald" icon={<KeyRound />} title={t('keyUsage.keyInfo')} />
+      <div className="grid grid-cols-2 gap-2">
+        <InfoTile label={t('keyUsage.quotaUsedLabel')} value={formatUSD(key.quota_used)} />
+        <InfoTile label={t('keyUsage.remaining')} value={key.quota_limit > 0 ? formatUSD(Math.max(0, key.quota_limit - key.quota_used)) : t('apiKeys.unlimited')} />
+        <InfoTile label={t('keyUsage.quotaTotalLabel')} value={key.quota_limit > 0 ? formatUSD(key.quota_limit) : t('apiKeys.unlimited')} />
+        <InfoTile label={t('keyUsage.lifetimeUsed')} value={formatUSD(key.total_used)} />
+        <InfoTile label={t('keyUsage.resetCount')} value={formatNumber(key.reset_count)} />
+        <InfoTile label={t('keyUsage.lastReset')} value={key.last_reset_at ? formatRelativeTime(key.last_reset_at, { variant: 'compact' }) : '-'} />
+        <InfoTile label={t('common.createdAt')} value={formatBeijingTime(key.created_at)} />
+        <InfoTile label={t('apiKeys.expiresColumn')} value={key.expires_at ? formatBeijingTime(key.expires_at) : t('apiKeys.neverExpires')} />
       </div>
     </PanelShell>
+  )
+}
+
+// ============================================================================
+// QuotaHero —— 顶部额度总览：密钥身份 + 剩余额度 + 额度进度条 + 窗口/模型额度剩余
+// ============================================================================
+type QuotaTone = 'emerald' | 'amber' | 'red'
+
+const QUOTA_TONES: Record<QuotaTone, { bar: string; text: string; glow: string; pill: string }> = {
+  emerald: {
+    bar: 'from-emerald-500 to-emerald-400 dark:from-emerald-400 dark:to-emerald-300',
+    text: 'text-emerald-600 dark:text-emerald-400',
+    glow: 'from-emerald-500/[0.07] dark:from-emerald-400/[0.08]',
+    pill: 'bg-emerald-500/14 text-emerald-600 dark:bg-emerald-500/20 dark:text-emerald-300',
+  },
+  amber: {
+    bar: 'from-amber-500 to-amber-400 dark:from-amber-400 dark:to-amber-300',
+    text: 'text-amber-600 dark:text-amber-400',
+    glow: 'from-amber-500/[0.08] dark:from-amber-400/[0.09]',
+    pill: 'bg-amber-500/14 text-amber-600 dark:bg-amber-500/20 dark:text-amber-300',
+  },
+  red: {
+    bar: 'from-red-500 to-red-400 dark:from-red-400 dark:to-red-300',
+    text: 'text-red-600 dark:text-red-400',
+    glow: 'from-red-500/[0.08] dark:from-red-400/[0.09]',
+    pill: 'bg-red-500/14 text-red-600 dark:bg-red-500/20 dark:text-red-300',
+  },
+}
+
+function quotaTone(percent: number): QuotaTone {
+  if (percent >= 90) return 'red'
+  if (percent >= 70) return 'amber'
+  return 'emerald'
+}
+
+function QuotaHero({ data, quotaPercent, controls }: { data: PublicAPIKeyUsageResponse; quotaPercent: number; controls: ReactNode }) {
+  const { t } = useTranslation()
+  const { key } = data
+  const hasQuota = key.quota_limit > 0
+  const remaining = Math.max(0, key.quota_limit - key.quota_used)
+  const exhausted = hasQuota && (remaining <= 0 || key.status === 'quota_exhausted')
+  const tone = hasQuota ? quotaTone(exhausted ? 100 : quotaPercent) : 'emerald'
+  const toneCls = QUOTA_TONES[tone]
+  const expiresAt = key.expires_at ? new Date(key.expires_at).getTime() : 0
+
+  const windowMeters = [
+    { label: t('keyUsage.windowToday'), usage: data.usage.windows.today, limit: key.limits.cost_limit_daily ?? 0 },
+    { label: '5h', usage: data.usage.windows.last_5h, limit: key.limits.cost_limit_5h ?? 0 },
+    { label: '7d', usage: data.usage.windows.last_7d, limit: key.limits.cost_limit_7d ?? 0 },
+    { label: '30d', usage: data.usage.windows.last_30d, limit: key.limits.cost_limit_30d ?? 0 },
+  ]
+    .filter((row) => row.usage && row.limit > 0)
+    .map((row) => ({
+      id: row.label,
+      label: row.label,
+      value: t('keyUsage.remainingAmount', { amount: formatCostCardValue(Math.max(0, row.limit - row.usage.user_billed)) }),
+      title: `${formatUSD(row.usage.user_billed)} / ${formatUSD(row.limit)}`,
+      percent: clampPercent((row.usage.user_billed / row.limit) * 100),
+    }))
+  const modelMeters = (data.model_request_usage ?? []).map((item) => ({
+    id: item.rule_id,
+    label: item.model,
+    value: t('modelRequests.remaining', { count: item.remaining }),
+    title: t('modelRequests.used', { used: item.used, limit: item.limit }),
+    percent: item.limit > 0 ? clampPercent((item.used / item.limit) * 100) : 0,
+  }))
+
+  return (
+    <Card className="relative gap-0 overflow-hidden py-0">
+      <div aria-hidden="true" className={`pointer-events-none absolute inset-x-0 top-0 h-40 bg-gradient-to-b ${toneCls.glow} to-transparent`} />
+      <CardContent className="relative p-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex min-w-0 items-center gap-3">
+            <div className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-primary/12 text-primary ring-1 ring-inset ring-primary/20">
+              <KeyRound className="size-4" />
+            </div>
+            <div className="min-w-0">
+              <div className="flex min-w-0 items-center gap-2">
+                <span className="truncate text-[15px] font-semibold text-foreground">{key.name || t('keyUsage.keyCard')}</span>
+                <StatusPill status={key.status} label={t(`apiKeys.status.${key.status}`)} />
+              </div>
+              <div className="truncate font-mono text-xs text-muted-foreground">{key.key}</div>
+            </div>
+          </div>
+          {controls}
+        </div>
+
+        <div className="mt-3 grid gap-3 border-t border-border/60 pt-3 lg:grid-cols-[minmax(0,1fr)_minmax(280px,380px)] lg:items-center lg:gap-6">
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+              <span className="inline-flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                <Wallet className="size-3.5" />
+                {t('keyUsage.remaining')}
+              </span>
+              {hasQuota ? (
+                <span className="inline-flex items-baseline gap-2">
+                  <span className={`text-2xl font-bold leading-none tracking-tight tabular-nums ${toneCls.text}`} title={formatUSD(remaining)}>
+                    {formatCostCardValue(remaining)}
+                  </span>
+                  <span className="text-sm tabular-nums text-muted-foreground">/ {formatCostCardValue(key.quota_limit)}</span>
+                </span>
+              ) : (
+                <span className="inline-flex items-center gap-1.5 text-2xl font-bold leading-none tracking-tight text-foreground">
+                  <InfinityIcon className="size-6 text-emerald-500 dark:text-emerald-400" />
+                  {t('apiKeys.unlimited')}
+                </span>
+              )}
+              {hasQuota && (exhausted || quotaPercent >= 90) ? (
+                <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold ${toneCls.pill}`}>
+                  <TriangleAlert className="size-3" />
+                  {exhausted ? t('keyUsage.quotaExhausted') : t('keyUsage.quotaLow')}
+                </span>
+              ) : null}
+            </div>
+            <div className="mt-2.5">
+              <div
+                role="progressbar"
+                aria-label={t('keyUsage.quotaProgress')}
+                aria-valuemin={0}
+                aria-valuemax={100}
+                aria-valuenow={hasQuota ? Math.round(quotaPercent) : 0}
+                className="h-2 overflow-hidden rounded-full bg-muted ring-1 ring-inset ring-border/50"
+              >
+                {hasQuota ? (
+                  <div
+                    className={`h-full rounded-full bg-gradient-to-r transition-[width] duration-700 ease-out motion-reduce:transition-none ${toneCls.bar}`}
+                    style={{ width: `${quotaPercent > 0 ? Math.max(1.5, quotaPercent) : 0}%` }}
+                  />
+                ) : (
+                  <div className="h-full w-full rounded-full bg-gradient-to-r from-emerald-500/30 via-emerald-500/15 to-emerald-500/5 dark:from-emerald-400/30 dark:via-emerald-400/15" />
+                )}
+              </div>
+              <div className="mt-1.5 flex flex-wrap items-center justify-between gap-x-4 gap-y-1 text-xs text-muted-foreground">
+                <span>
+                  {t('keyUsage.quotaUsedLabel')}{' '}
+                  <span className="font-semibold tabular-nums text-foreground" title={formatUSD(key.quota_used)}>{formatCostCardValue(key.quota_used)}</span>
+                  {hasQuota ? <span className="tabular-nums"> · {formatPercent(quotaPercent)}</span> : null}
+                </span>
+                <span className="tabular-nums">
+                  {hasQuota ? t('keyUsage.quotaTotal', { amount: formatCostCardValue(key.quota_limit) }) : t('keyUsage.unlimitedHint')}
+                </span>
+              </div>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-2">
+            <HeroTile icon={<History />} label={t('keyUsage.lifetimeUsed')} value={formatCostCardValue(key.total_used)} title={formatUSD(key.total_used)} />
+            <HeroTile
+              icon={<CalendarClock />}
+              label={t('apiKeys.expiresColumn')}
+              value={key.expires_at ? formatBeijingTime(key.expires_at) : t('apiKeys.neverExpires')}
+              hint={expiresAt > Date.now() ? t('keyUsage.resetRemaining', { duration: formatDurationUntil(key.expires_at as string) }) : undefined}
+            />
+          </div>
+        </div>
+
+        {windowMeters.length > 0 || modelMeters.length > 0 ? (
+          <div className={`mt-3 grid gap-3 ${windowMeters.length > 0 && modelMeters.length > 0 ? 'lg:grid-cols-2' : ''}`}>
+            {windowMeters.length > 0 ? (
+              <HeroMeterGroup title={t('keyUsage.windowRemaining')} meters={windowMeters} wide={modelMeters.length === 0} />
+            ) : null}
+            {modelMeters.length > 0 ? (
+              <HeroMeterGroup title={t('keyUsage.modelRequestRemaining')} meters={modelMeters} wide={windowMeters.length === 0} mono />
+            ) : null}
+          </div>
+        ) : null}
+      </CardContent>
+    </Card>
+  )
+}
+
+function HeroTile({ icon, label, value, hint, title }: { icon: ReactNode; label: string; value: string; hint?: string; title?: string }) {
+  return (
+    <div className="min-w-0 rounded-lg border border-border/70 bg-background/60 px-3 py-2">
+      <div className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground [&_svg]:size-3.5 [&_svg]:shrink-0">
+        {icon}
+        <span className="truncate">{label}</span>
+      </div>
+      <div className="mt-0.5 flex min-w-0 items-baseline gap-1.5" title={title ?? value}>
+        <span className="truncate text-sm font-semibold tabular-nums text-foreground">{value}</span>
+        {hint ? <span className="shrink-0 text-[11px] tabular-nums text-muted-foreground">{hint}</span> : null}
+      </div>
+    </div>
+  )
+}
+
+function HeroMeterGroup({ title, meters, wide = false, mono = false }: { title: string; meters: Array<{ id: string; label: string; value: string; title: string; percent: number }>; wide?: boolean; mono?: boolean }) {
+  return (
+    <div className="rounded-lg border border-border/70 bg-background/60 px-3 py-2.5">
+      <div className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">{title}</div>
+      <div className={`grid gap-x-6 gap-y-2 ${meters.length === 1 ? '' : wide ? 'sm:grid-cols-2 xl:grid-cols-4' : 'sm:grid-cols-2'}`}>
+        {meters.map((meter) => {
+          const tone = QUOTA_TONES[quotaTone(meter.percent)]
+          return (
+            <div key={meter.id} title={meter.title}>
+              <div className="mb-1 flex items-center justify-between gap-3 text-xs">
+                <span className={`min-w-0 truncate font-medium text-foreground ${mono ? 'font-mono' : ''}`}>{meter.label}</span>
+                <span className={`shrink-0 font-semibold tabular-nums ${tone.text}`}>{meter.value}</span>
+              </div>
+              <div className="h-1.5 overflow-hidden rounded-full bg-muted ring-1 ring-inset ring-border/50">
+                <div
+                  className={`h-full rounded-full bg-gradient-to-r transition-[width] duration-500 ease-out motion-reduce:transition-none ${tone.bar}`}
+                  style={{ width: `${meter.percent > 0 ? Math.max(2, meter.percent) : 0}%` }}
+                />
+              </div>
+            </div>
+          )
+        })}
+      </div>
+    </div>
   )
 }
 
@@ -800,7 +1042,10 @@ function ModelStatsPanel({ rows }: { rows: PublicAPIKeyUsageBreakdown[] }) {
                   <div className="flex min-w-0 items-start gap-2.5">
                     <RankBadge accent={accent} rank={index + 1} />
                     <div className="min-w-0">
-                      <div className="truncate font-mono text-[13px] font-semibold leading-tight text-foreground" title={item.name}>{item.name}</div>
+                      <div className="flex min-w-0 items-center gap-1.5">
+                        <ModelLogo model={item.name} size={16} variant="plain" />
+                        <span className="truncate font-mono text-[13px] font-semibold leading-tight text-foreground" title={item.name}>{item.name}</span>
+                      </div>
                       <div className="mt-0.5 flex flex-wrap items-center gap-x-2.5 gap-y-0.5 text-[11px] text-muted-foreground">
                         <span className="tabular-nums">{t('usage.modelStatsRequests')} {formatNumber(item.requests)}</span>
                         <span className="text-border">·</span>
@@ -837,14 +1082,14 @@ function ModelSharePie({ rows }: { rows: PublicAPIKeyUsageBreakdown[] }) {
   const totalRequests = rows.reduce((sum, item) => sum + safeNumber(item.requests), 0)
   const useAmount = totalAmount > 0
   const base = rows
-    .map((item) => ({ name: item.name || 'unknown', value: useAmount ? safeNumber(item.user_billed) : safeNumber(item.requests) }))
+    .map((item) => ({ name: item.name || 'unknown', value: useAmount ? safeNumber(item.user_billed) : safeNumber(item.requests), isOther: false }))
     .filter((item) => item.value > 0)
   const total = base.reduce((sum, item) => sum + item.value, 0)
   if (total <= 0) return null
   const visible = base.slice(0, 4)
   const overflow = base.slice(4)
   if (overflow.length > 0) {
-    visible.push({ name: t('usage.modelStatsOther'), value: overflow.reduce((sum, item) => sum + item.value, 0) })
+    visible.push({ name: t('usage.modelStatsOther'), value: overflow.reduce((sum, item) => sum + item.value, 0), isOther: true })
   }
   const pieData = visible.map((item) => ({ ...item, share: (item.value / total) * 100 }))
   const centerValue = useAmount ? formatCostCardValue(totalAmount) : formatNumber(totalRequests)
@@ -882,6 +1127,7 @@ function ModelSharePie({ rows }: { rows: PublicAPIKeyUsageBreakdown[] }) {
         {pieData.map((item, index) => (
           <div key={`${item.name}-${index}`} className="flex items-center gap-2 text-xs">
             <span className="size-2.5 shrink-0 rounded-full" style={{ background: PIE_COLORS[index % PIE_COLORS.length] }} />
+            {!item.isOther ? <ModelLogo model={item.name} size={14} variant="plain" /> : null}
             <span className="min-w-0 flex-1 truncate text-muted-foreground" title={item.name}>{item.name}</span>
             <span className="shrink-0 font-mono text-[11px] font-medium tabular-nums text-foreground">{item.share.toFixed(1)}%</span>
           </div>
@@ -939,8 +1185,229 @@ function statusBadgeClass(code: number): string {
   return 'border-transparent bg-slate-500/14 text-slate-600 dark:bg-slate-500/20 dark:text-slate-300'
 }
 
+const CHANNEL_LABELS: Record<UpstreamChannel, string> = {
+  codex: 'Codex',
+  grok: 'Grok',
+  antigravity: 'Antigravity',
+  claude: 'Claude',
+}
+
+function isKnownChannel(channel?: string): channel is UpstreamChannel {
+  return Boolean(channel && channel in CHANNEL_LABELS)
+}
+
+function statusFilterForCode(code: number): NonNullable<PublicAPIKeyUsageLogFilter['status']> {
+  if (code === 429) return '429'
+  if (code >= 500) return '5xx'
+  if (code >= 400) return '4xx'
+  return 'success'
+}
+
+// LogModelBadge —— 与管理端使用统计一致：渠道已知时展示渠道 logo，否则按模型名匹配品牌 logo；点击切换模型筛选
+function LogModelBadge({ log, active, onToggle, compact = false }: { log: PublicAPIKeyUsageLog; active: boolean; onToggle: (model: string) => void; compact?: boolean }) {
+  const { t } = useTranslation()
+  const model = log.model || '-'
+  return (
+    <button
+      type="button"
+      onClick={() => log.model && onToggle(log.model)}
+      title={t('usage.filterByModelHint', { model })}
+      className={`inline-flex max-w-full items-center gap-1.5 rounded-md border px-2 py-0.5 font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+        compact ? 'text-[12px]' : 'text-[13px]'
+      } ${active ? 'border-primary/50 bg-primary/8 text-primary' : 'border-border bg-background text-foreground hover:border-primary/30 hover:bg-muted/60'}`}
+    >
+      {isKnownChannel(log.channel) ? (
+        <ChannelLogo channel={log.channel} size={13} title={CHANNEL_LABELS[log.channel]} />
+      ) : (
+        <ModelLogo model={log.effective_model || log.model} size={14} variant="plain" />
+      )}
+      <span className="truncate">{model}</span>
+    </button>
+  )
+}
+
+function LogStatusBadge({ code, onFilter, compact = false }: { code: number; onFilter: (status: NonNullable<PublicAPIKeyUsageLogFilter['status']>) => void; compact?: boolean }) {
+  const { t } = useTranslation()
+  return (
+    <button
+      type="button"
+      onClick={() => onFilter(statusFilterForCode(code))}
+      title={t('usage.filterByStatus', { status: code })}
+      className="rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+    >
+      <Badge variant="outline" className={`cursor-pointer ${compact ? 'text-[12px]' : 'text-[13px]'} ${statusBadgeClass(code)}`}>{code}</Badge>
+    </button>
+  )
+}
+
+function LogFilterBar({
+  filter,
+  modelOptions,
+  endpointOptions,
+  loading,
+  onChange,
+  onReset,
+}: {
+  filter: PublicAPIKeyUsageLogFilter
+  modelOptions: string[]
+  endpointOptions: string[]
+  loading: boolean
+  onChange: (patch: PublicAPIKeyUsageLogFilter) => void
+  onReset: () => void
+}) {
+  const { t } = useTranslation()
+  const statusOptions: Array<{ value: NonNullable<PublicAPIKeyUsageLogFilter['status']>; label: string; tone?: string }> = [
+    { value: '', label: t('usage.statusAll') },
+    { value: 'success', label: t('usage.statusSuccess'), tone: 'text-emerald-600 dark:text-emerald-300' },
+    { value: 'error', label: t('usage.statusErrors'), tone: 'text-red-600 dark:text-red-300' },
+    { value: '4xx', label: '4xx', tone: 'text-amber-600 dark:text-amber-300' },
+    { value: '5xx', label: '5xx', tone: 'text-red-600 dark:text-red-300' },
+    { value: '429', label: '429', tone: 'text-amber-600 dark:text-amber-300' },
+  ]
+  const models = filter.model && !modelOptions.includes(filter.model) ? [filter.model, ...modelOptions] : modelOptions
+  const endpoints = filter.endpoint && !endpointOptions.includes(filter.endpoint) ? [filter.endpoint, ...endpointOptions] : endpointOptions
+  const modelOptionContent = (model: string) => (
+    <span className="flex min-w-0 items-center gap-2">
+      <ModelLogo model={model} size={16} variant="plain" />
+      <span className="truncate">{model}</span>
+    </span>
+  )
+  const hasActive = Boolean(filter.model || filter.endpoint || filter.status || filter.stream || filter.channel)
+  const currentStatus = filter.status ?? ''
+
+  return (
+    <div className="mb-4 space-y-2.5 rounded-xl border border-border/70 bg-muted/20 p-2.5">
+      <div className="flex flex-wrap items-center gap-2">
+        <LogChannelSwitcher value={filter.channel ?? ''} onChange={(channel) => onChange({ channel })} />
+        {loading || hasActive ? (
+          <div className="ml-auto flex items-center gap-2">
+            {loading ? <Loader2 className="size-4 animate-spin text-muted-foreground" /> : null}
+            {hasActive ? (
+              <button
+                type="button"
+                onClick={onReset}
+                className="inline-flex h-8 items-center gap-1 rounded-lg border border-border bg-background px-2.5 text-[13px] text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground"
+              >
+                <X className="size-3.5" />
+                {t('usage.clearFilters')}
+              </button>
+            ) : null}
+          </div>
+        ) : null}
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="inline-flex flex-wrap items-center gap-1" role="group" aria-label={t('usage.tableStatus')}>
+          {statusOptions.map((option) => (
+            <button
+              key={option.value || 'all'}
+              type="button"
+              aria-pressed={currentStatus === option.value}
+              onClick={() => onChange({ status: option.value })}
+              className={`h-8 rounded-lg border px-3 text-[13px] font-medium transition-colors ${
+                currentStatus === option.value
+                  ? 'border-primary/35 bg-primary/10 text-primary shadow-sm'
+                  : `border-border bg-background hover:bg-muted/60 ${option.tone ?? 'text-muted-foreground hover:text-foreground'}`
+              }`}
+            >
+              {option.label}
+            </button>
+          ))}
+        </div>
+        <div className="hidden h-6 w-px bg-border md:block" aria-hidden="true" />
+        <div className="grid w-full grid-cols-1 gap-2 sm:grid-cols-3 md:flex md:w-auto md:flex-wrap md:items-center">
+          <Select
+            compact
+            className="md:w-60"
+            aria-label={t('usage.tableModel')}
+            value={filter.model ?? ''}
+            onValueChange={(value) => onChange({ model: value })}
+            placeholder={t('usage.allModels')}
+            options={[
+              { label: t('usage.allModels'), value: '' },
+              ...models.map((model) => ({ label: model, value: model, content: modelOptionContent(model), triggerContent: modelOptionContent(model) })),
+            ]}
+          />
+          <Select
+            compact
+            className="md:w-52"
+            aria-label={t('keyUsage.endpoint')}
+            value={filter.endpoint ?? ''}
+            onValueChange={(value) => onChange({ endpoint: value })}
+            placeholder={t('usage.allEndpoints')}
+            options={[
+              { label: t('usage.allEndpoints'), value: '' },
+              ...endpoints.map((endpoint) => ({ label: endpoint, value: endpoint, content: <span className="truncate font-mono">{endpoint}</span> })),
+            ]}
+          />
+          <Select
+            compact
+            className="md:w-36"
+            aria-label={t('usage.tableType')}
+            value={filter.stream ?? ''}
+            onValueChange={(value) => onChange({ stream: value as PublicAPIKeyUsageLogFilter['stream'] })}
+            placeholder={t('usage.allTypes')}
+            options={[
+              { label: t('usage.allTypes'), value: '' },
+              { label: 'Stream', value: 'stream' },
+              { label: 'Sync', value: 'sync' },
+            ]}
+          />
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// LogChannelSwitcher —— 复刻管理端 ChannelFilter 的滑块样式；公开页不依赖管理端的渠道可见性设置
+function LogChannelSwitcher({ value, onChange }: { value: '' | UpstreamChannel; onChange: (next: '' | UpstreamChannel) => void }) {
+  const { t } = useTranslation()
+  const options: Array<{ key: '' | UpstreamChannel; label: string }> = [
+    { key: '', label: t('usage.channelAll') },
+    { key: 'codex', label: CHANNEL_LABELS.codex },
+    { key: 'grok', label: CHANNEL_LABELS.grok },
+    { key: 'antigravity', label: CHANNEL_LABELS.antigravity },
+    { key: 'claude', label: CHANNEL_LABELS.claude },
+  ]
+  const activeIndex = Math.max(0, options.findIndex((option) => option.key === value))
+  return (
+    <div
+      className="relative grid w-full items-center rounded-lg border border-border bg-background/60 p-0.5 sm:w-auto"
+      style={{ gridTemplateColumns: `repeat(${options.length}, minmax(0, 1fr))` }}
+      role="group"
+      aria-label={t('keyUsage.channel')}
+    >
+      <span
+        aria-hidden="true"
+        className="absolute inset-y-0.5 left-0.5 rounded-md border border-border bg-background shadow-sm transition-transform duration-300 ease-out motion-reduce:transition-none"
+        style={{ width: `calc((100% - 4px) / ${options.length})`, transform: `translateX(${activeIndex * 100}%)` }}
+      />
+      {options.map(({ key, label }) => (
+        <button
+          key={key || 'all'}
+          type="button"
+          onClick={() => onChange(key)}
+          aria-pressed={value === key}
+          title={label}
+          className={`relative z-10 inline-flex min-w-0 items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-[13px] font-semibold transition-colors duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:px-3.5 ${
+            value === key ? 'text-foreground' : 'text-muted-foreground opacity-75 grayscale hover:opacity-100 hover:text-foreground hover:grayscale-0'
+          }`}
+        >
+          {key ? <ChannelLogo channel={key} size={15} /> : null}
+          <span className={key ? 'hidden truncate min-[480px]:inline' : 'truncate'}>{label}</span>
+        </button>
+      ))}
+    </div>
+  )
+}
+
 function RecentLogsTable({
   logs,
+  filter,
+  modelOptions,
+  endpointOptions,
+  loading,
+  onFilterChange,
+  onFilterReset,
   page,
   totalPages,
   totalItems,
@@ -950,6 +1417,12 @@ function RecentLogsTable({
   onPageSizeChange,
 }: {
   logs: PublicAPIKeyUsageLog[]
+  filter: PublicAPIKeyUsageLogFilter
+  modelOptions: string[]
+  endpointOptions: string[]
+  loading: boolean
+  onFilterChange: (patch: PublicAPIKeyUsageLogFilter) => void
+  onFilterReset: () => void
   page: number
   totalPages: number
   totalItems: number
@@ -959,20 +1432,34 @@ function RecentLogsTable({
   onPageSizeChange: (pageSize: number) => void
 }) {
   const { t } = useTranslation()
+  const hasActiveFilter = Boolean(filter.model || filter.endpoint || filter.status || filter.stream || filter.channel)
+  const toggleModel = (model: string) => onFilterChange({ model: filter.model === model ? '' : model })
+  const filterStatus = (status: NonNullable<PublicAPIKeyUsageLogFilter['status']>) => onFilterChange({ status: filter.status === status ? '' : status })
+  const emptyText = hasActiveFilter ? t('usage.emptyFilteredDesc') : t('keyUsage.noRows')
   return (
-    <Card className="py-0">
-      <CardContent className="p-4">
-        <div className="mb-3 flex items-center justify-between gap-3">
-          <h3 className="text-base font-semibold text-foreground">{t('keyUsage.recent')}</h3>
-          <span className="text-xs text-muted-foreground">{t('usage.recordsCount', { count: totalItems })}</span>
-        </div>
+    <Card className="group/panel py-0">
+      <CardContent className="p-4 sm:p-5">
+        <PanelHeader
+          accent="blue"
+          icon={<ScrollText />}
+          title={t('keyUsage.recent')}
+          trailing={<span className="rounded-full bg-muted px-2.5 py-1 text-xs font-medium tabular-nums text-muted-foreground">{t('usage.recordsCount', { count: totalItems })}</span>}
+        />
+        <LogFilterBar
+          filter={filter}
+          modelOptions={modelOptions}
+          endpointOptions={endpointOptions}
+          loading={loading}
+          onChange={onFilterChange}
+          onReset={onFilterReset}
+        />
         <div className="grid gap-3 lg:hidden">
           {logs.length > 0 ? logs.map((log) => (
             <Card key={log.id} className="p-3.5 space-y-2">
               <div className="flex items-start justify-between gap-2">
                 <div className="flex flex-wrap items-center gap-1.5 min-w-0">
-                  <Badge variant="outline" className={`text-[12px] ${statusBadgeClass(log.status_code)}`}>{log.status_code}</Badge>
-                  <Badge variant="outline" className="text-[12px]">{log.model || '-'}</Badge>
+                  <LogStatusBadge code={log.status_code} onFilter={filterStatus} compact />
+                  <LogModelBadge log={log} active={filter.model === log.model} onToggle={toggleModel} compact />
                   {log.effective_model && log.effective_model !== log.model ? (
                     <Badge variant="outline" className="border-transparent bg-blue-500/10 text-[11px] font-medium text-blue-600 dark:bg-blue-500/20 dark:text-blue-400">→ {log.effective_model}</Badge>
                   ) : null}
@@ -1003,7 +1490,7 @@ function RecentLogsTable({
               </div>
             </Card>
           )) : (
-            <div className="py-8 text-center text-sm text-muted-foreground">{t('keyUsage.noRows')}</div>
+            <div className="py-8 text-center text-sm text-muted-foreground">{emptyText}</div>
           )}
         </div>
 
@@ -1029,14 +1516,14 @@ function RecentLogsTable({
               {logs.length > 0 ? logs.map((log) => (
                 <TableRow key={log.id}>
                   <TableCell>
-                    <Badge variant="outline" className={`text-[13px] ${statusBadgeClass(log.status_code)}`}>{log.status_code}</Badge>
+                    <LogStatusBadge code={log.status_code} onFilter={filterStatus} />
                   </TableCell>
                   <TableCell>
                     <div className="flex flex-wrap items-center gap-1.5">
                       {log.via_websocket ? (
                         <Badge variant="outline" className="border-transparent bg-cyan-500/12 text-[11px] font-semibold uppercase text-cyan-600 dark:bg-cyan-500/20 dark:text-cyan-400">ws</Badge>
                       ) : null}
-                      <Badge variant="outline" className="text-[13px]">{log.model || '-'}</Badge>
+                      <LogModelBadge log={log} active={filter.model === log.model} onToggle={toggleModel} />
                       {log.effective_model && log.effective_model !== log.model ? (
                         <Badge variant="outline" className="border-transparent bg-blue-500/10 text-[11px] font-medium text-blue-600 dark:bg-blue-500/20 dark:text-blue-400">→ {log.effective_model}</Badge>
                       ) : null}
@@ -1100,7 +1587,7 @@ function RecentLogsTable({
                 </TableRow>
               )) : (
                 <TableRow>
-                  <TableCell colSpan={9} className="py-8 text-center text-muted-foreground">{t('keyUsage.noRows')}</TableCell>
+                  <TableCell colSpan={9} className="py-8 text-center text-muted-foreground">{emptyText}</TableCell>
                 </TableRow>
               )}
             </TableBody>
@@ -1124,12 +1611,17 @@ function RecentLogsTable({
 // LogCostCell —— 价格列：悬停展示输入/输出/缓存的费用与单价明细（与管理端口径一致）
 function LogCostCell({ log }: { log: PublicAPIKeyUsageLog }) {
   const { t } = useTranslation()
-  if (log.user_billing_mode === 'per_image') return <ImageBillingCost count={log.billed_image_count} unitPrice={log.image_unit_price} userBilled={log.user_billed} />
+  const mode = log.user_billing_mode || ''
+  if (mode === 'per_image' || mode === 'per_video' || mode === 'per_second') return <ImageBillingCost mode={mode} count={log.billed_image_count} unitPrice={log.image_unit_price} userBilled={log.user_billed} />
   const hasCostContext = log.status_code < 400 && (
     log.user_billed > 0 || log.total_cost > 0 || log.input_tokens > 0 || log.output_tokens > 0 || log.cached_tokens > 0
   )
   if (!hasCostContext) {
     return <span className="font-mono text-[13px] text-muted-foreground">-</span>
+  }
+  // 媒体模型按张/秒折算上游成本,没有 token 分项可拆,直接展示金额。
+  if (mediaBillingUnit(log.effective_model || log.model)) {
+    return <span className="font-mono text-[13px] font-semibold tabular-nums text-emerald-600 dark:text-emerald-400">{formatUSD(log.user_billed)}</span>
   }
   return (
     <Tooltip>

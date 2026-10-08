@@ -436,7 +436,7 @@ func (s *Store) finishReloadedOAuthRefresh(ctx context.Context, acc *Account) {
 		acc.CooldownReason = ""
 	}
 	acc.ErrorMsg = ""
-	acc.recomputeSchedulerLocked(atomic.LoadInt64(&s.maxConcurrency))
+	acc.recomputeSchedulerLocked(s.maxConcurrency.Load())
 	accessToken := acc.AccessToken
 	expiresAt := acc.ExpiresAt
 	dbID := acc.DBID

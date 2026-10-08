@@ -127,7 +127,7 @@ func TestModelRequestQuotaHTTPMappedModelAndProtocolErrors(t *testing.T) {
 		t.Fatalf("upstream calls=%d", sent.Load())
 	}
 	for _, account := range h.store.Accounts() {
-		if atomic.LoadInt64(&account.ActiveRequests) != 0 {
+		if account.ActiveRequests.Load() != 0 {
 			t.Fatal("quota rejection leaked account lease")
 		}
 	}
@@ -246,10 +246,10 @@ func TestModelRequestQuotaWebsocketFramesAndOtherModel(t *testing.T) {
 	}
 	for _, account := range h.store.Accounts() {
 		deadline := time.Now().Add(time.Second)
-		for atomic.LoadInt64(&account.ActiveRequests) != 0 && time.Now().Before(deadline) {
+		for account.ActiveRequests.Load() != 0 && time.Now().Before(deadline) {
 			time.Sleep(time.Millisecond)
 		}
-		if atomic.LoadInt64(&account.ActiveRequests) != 0 {
+		if account.ActiveRequests.Load() != 0 {
 			t.Fatal("WS quota rejection leaked account lease")
 		}
 	}

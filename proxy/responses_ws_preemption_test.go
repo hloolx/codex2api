@@ -483,10 +483,10 @@ func TestResponsesWebSocketNewerSameSessionPreemptsBeforeConcurrencyAdmission(t 
 		t.Fatalf("upstream calls = %d, want 2", got)
 	}
 	releaseDeadline := time.Now().Add(time.Second)
-	for atomic.LoadInt64(&account.ActiveRequests) != 0 && time.Now().Before(releaseDeadline) {
+	for account.ActiveRequests.Load() != 0 && time.Now().Before(releaseDeadline) {
 		time.Sleep(time.Millisecond)
 	}
-	if got := atomic.LoadInt64(&account.ActiveRequests); got != 0 {
+	if got := account.ActiveRequests.Load(); got != 0 {
 		t.Fatalf("account active requests after replacement cleanup = %d, want 0", got)
 	}
 }

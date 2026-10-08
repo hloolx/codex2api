@@ -234,3 +234,30 @@ func TestPromptGuardApprovalReassessmentTemplateCannotBeUsedAsBypass(t *testing.
 		})
 	}
 }
+
+func TestPromptGuardApprovalReviewModelsTrustConfiguredReviewer(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	body := approvalReassessmentWireBody(t, approvalReassessmentWirePrompt(), "gpt-5.6-luna")
+	evaluate := func(cfg promptfilter.Config) promptGuardEvaluation {
+		handler := newPromptGuardTestHandler(promptfilter.NormalizeConfig(cfg))
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+		return handler.evaluatePromptGuard(c, body, body, "/v1/responses", "gpt-5.6-luna", promptfilter.TransportHTTP)
+	}
+
+	untrusted := evaluate(promptGuardTestConfig())
+	if untrusted.Decision.Action != promptfilter.ActionBlock || untrusted.Decision.ApprovalReviewModelUntrusted != "gpt-5.6-luna" {
+		t.Fatalf("reviewer outside approval_review_models was not enforced and annotated: %+v", untrusted.Decision)
+	}
+	input := (&Handler{}).buildPromptFilterLogInput(promptFilterAuditContext{}, "/v1/responses", "gpt-5.6-luna", "local_filter", "", untrusted.Verdict, &untrusted.Decision, &untrusted.Envelope, true)
+	if input == nil || !strings.HasPrefix(input.MatchContext, "approval_review_model_untrusted: gpt-5.6-luna") {
+		t.Fatalf("audit log does not name the untrusted review model: %+v", input)
+	}
+
+	cfg := promptGuardTestConfig()
+	cfg.Advanced.Enforcement.ApprovalReviewModels = []string{"codex-auto-review", "gpt-5.6-luna"}
+	trusted := evaluate(cfg)
+	if trusted.Decision.Action != promptfilter.ActionAllow || trusted.Decision.ApplicationPromptKind != "approval_reassessment" || trusted.Decision.StrikeEligible {
+		t.Fatalf("configured review model was not trusted: %+v", trusted.Decision)
+	}
+}

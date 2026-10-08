@@ -28,8 +28,14 @@ type streamFlushWriter struct {
 	lastFlush     time.Time
 	buffer        bytes.Buffer
 	outputScanner *promptfilter.OutputScanner
-	writtenBytes  atomic.Int64
-	diag          *streamPhaseDiagnostics
+	// scanCarry 暂存扫描器已放行但尚未凑满一个完整 SSE 事件的尾巴。扫描器按
+	// 字节数扣安全窗,切点会落在事件正中间;若把半个事件写到底层,任何绕过本
+	// 写入器直写 ResponseWriter 的字节(请求级保活注释、续想心跳)都会插进
+	// JSON 里(issue #696)。这里把底层写入对齐到事件边界,保证底层流永远停在
+	// 两个事件之间。
+	scanCarry    []byte
+	writtenBytes atomic.Int64
+	diag         *streamPhaseDiagnostics
 }
 
 // Small buffers are reused across token events; an exceptional large event
@@ -171,7 +177,37 @@ func (w *streamFlushWriter) scanOutput(data []byte) ([]byte, error) {
 	if w == nil || w.outputScanner == nil {
 		return data, nil
 	}
-	return w.outputScanner.Push(data)
+	released, err := w.outputScanner.Push(data)
+	if err != nil {
+		// 扫描器判定拦截时会丢弃自己的安全窗;尚未落地的尾巴同样不能再出去。
+		w.scanCarry = nil
+		return nil, err
+	}
+	return w.alignToEventBoundary(released), nil
+}
+
+// alignToEventBoundary 把扫描器放行的字节与之前暂存的尾巴拼接后,只返回到最后
+// 一个事件分隔符(空行)为止的部分,余下的半个事件继续暂存。没有完整事件时返回
+// nil,调用方视同扫描器仍在扣留。多扣一点只会让输出晚到,绝不会放出扫描器还没
+// 看过的字节,所以安全窗语义不变。
+func (w *streamFlushWriter) alignToEventBoundary(released []byte) []byte {
+	if len(released) == 0 && len(w.scanCarry) == 0 {
+		return nil
+	}
+	w.scanCarry = append(w.scanCarry, released...)
+	idx := bytes.LastIndex(w.scanCarry, sseDataSuffix)
+	if idx < 0 {
+		return nil
+	}
+	cut := idx + len(sseDataSuffix)
+	out := append([]byte(nil), w.scanCarry[:cut]...)
+	rest := w.scanCarry[cut:]
+	if len(rest) == 0 {
+		w.scanCarry = w.scanCarry[:0]
+	} else {
+		w.scanCarry = append(w.scanCarry[:0], rest...)
+	}
+	return out
 }
 
 func newStreamFlushWriter(writer io.Writer, flusher http.Flusher) *streamFlushWriter {
@@ -343,16 +379,13 @@ func (w *streamFlushWriter) WriteSSEData(data []byte) error {
 }
 
 // WriteSSEComment 写一条 SSE 注释(如 ": keepalive\n\n")并立即冲刷传输。
-// 注释不是模型输出:输出过滤关闭时先排空合并缓冲再直写底层,绕开扫描器;
-// 输出过滤开启时必须走常规写路径——扫描器持有跨块安全窗,底层流可能正停在
-// 某个事件的中间,绕过扫描器直写会把注释插进半个事件里。走扫描器意味着注释
-// 可能延迟到下一次冲刷才真正落到下游,保活周期(15s)远大于冲刷间隔,可接受。
+// 注释不是模型输出,不进扫描器:先排空合并缓冲(里面只有完整事件)再直写底层。
+// 输出过滤开启时,scanOutput 已把底层写入对齐到事件边界(见 scanCarry),
+// 底层流不会停在半个事件里,直写是安全的;若改走扫描器,注释会和安全窗一起
+// 被扣到下一个终态帧,上游长时间静默时保活就完全失效。
 func (w *streamFlushWriter) WriteSSEComment(comment string) error {
 	if w == nil || w.writer == nil || comment == "" {
 		return nil
-	}
-	if w.outputScanner != nil {
-		return w.WriteString(comment)
 	}
 	if w.buffer.Len() > 0 {
 		if err := w.writeUnderlying(w.buffer.Bytes()); err != nil {
@@ -407,7 +440,15 @@ func (w *streamFlushWriter) Finalize() error {
 	if w.outputScanner != nil {
 		pending, err := w.outputScanner.Finalize()
 		if err != nil {
+			w.scanCarry = nil
 			return err
+		}
+		// 流真正结束:先补齐暂存的半个事件,再写扫描器释放的安全窗。
+		if len(w.scanCarry) > 0 {
+			if err := w.writeUnderlying(w.scanCarry); err != nil {
+				return err
+			}
+			w.scanCarry = nil
 		}
 		if len(pending) > 0 {
 			if err := w.writeUnderlying(pending); err != nil {

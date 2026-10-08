@@ -9,12 +9,11 @@ import (
 )
 
 func newSessionSlotBufferTestStore(limit int64, accounts ...*Account) *Store {
-	store := &Store{
+	store := (&Store{
 		accounts:                accounts,
-		maxConcurrency:          limit,
 		sessionBindings:         make(map[string]sessionAffinity),
 		sessionSlotReservations: make(map[int64]map[string][]uint64),
-	}
+	}).withMaxConcurrency(limit)
 	store.SetSessionSlotBuffer(50 * time.Millisecond)
 	store.SetSessionSlotBufferEnabled(true)
 	return store
@@ -22,12 +21,11 @@ func newSessionSlotBufferTestStore(limit int64, accounts ...*Account) *Store {
 
 func TestSessionSlotBufferDisabledByDefault(t *testing.T) {
 	account := &Account{DBID: 1, AccessToken: "tok-1"}
-	store := &Store{
+	store := (&Store{
 		accounts:                []*Account{account},
-		maxConcurrency:          1,
 		sessionBindings:         make(map[string]sessionAffinity),
 		sessionSlotReservations: make(map[int64]map[string][]uint64),
-	}
+	}).withMaxConcurrency(1)
 	store.SetSessionSlotBuffer(50 * time.Millisecond)
 
 	acquired := store.Next()
@@ -140,7 +138,7 @@ func TestImmediateReleaseDoesNotCreateSessionReservation(t *testing.T) {
 		t.Fatal("failed to acquire test account")
 	}
 	store.Release(acquired)
-	if got := atomic.LoadInt64(&account.ActiveRequests); got != 0 {
+	if got := account.ActiveRequests.Load(); got != 0 {
 		t.Fatalf("active after immediate release = %d, want 0", got)
 	}
 	if got := accountOccupiedRequests(account); got != 0 {
@@ -165,7 +163,7 @@ func TestConcurrentAccountSlotAcquireReleaseNeverLeaksOrExceedsLimit(t *testing.
 				for !reserveOccupiedAccountSlot(account, limit) {
 					runtime.Gosched()
 				}
-				occupied := atomic.LoadInt64(&account.OccupiedRequests)
+				occupied := account.OccupiedRequests.Load()
 				for previous := atomic.LoadInt64(&maxOccupied); occupied > previous; previous = atomic.LoadInt64(&maxOccupied) {
 					if atomic.CompareAndSwapInt64(&maxOccupied, previous, occupied) {
 						break
@@ -180,10 +178,10 @@ func TestConcurrentAccountSlotAcquireReleaseNeverLeaksOrExceedsLimit(t *testing.
 	}
 	wg.Wait()
 
-	if got := atomic.LoadInt64(&account.ActiveRequests); got != 0 {
+	if got := account.ActiveRequests.Load(); got != 0 {
 		t.Fatalf("final active = %d, want 0", got)
 	}
-	if got := atomic.LoadInt64(&account.OccupiedRequests); got != 0 {
+	if got := account.OccupiedRequests.Load(); got != 0 {
 		t.Fatalf("final occupied = %d, want 0", got)
 	}
 	if maxOccupied > limit {

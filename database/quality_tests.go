@@ -12,6 +12,14 @@ import (
 
 const QualityTestConcurrency = 3
 
+// Long HTML generations on slow plans (xhigh, astra) routinely pass 10 minutes;
+// the per-run limit is chosen at submission within these bounds.
+const (
+	QualityTestDefaultTimeout = 20 * time.Minute
+	QualityTestMinTimeout     = 5 * time.Minute
+	QualityTestMaxTimeout     = 30 * time.Minute
+)
+
 var ErrQualityTestCapacity = errors.New("最多同时运行 3 个检测任务，请等待一个任务完成")
 var ErrQualityTestAccountBusy = errors.New("该账号已有进行中的检测任务")
 
@@ -22,6 +30,11 @@ type QualityTestMetrics struct {
 	InputTokens     *int64 `json:"input_tokens,omitempty"`
 	OutputTokens    *int64 `json:"output_tokens,omitempty"`
 	ReasoningTokens *int64 `json:"reasoning_tokens,omitempty"`
+	// Interrupted marks a run whose upstream stream or transport broke before a
+	// terminal event; whatever output arrived is kept.
+	Interrupted bool `json:"interrupted,omitempty"`
+	// Retries counts automatic re-attempts after a break before any output.
+	Retries int `json:"retries,omitempty"`
 }
 
 // Account identity is a snapshot, so renaming/deleting an account cannot rewrite history.
@@ -46,6 +59,9 @@ type QualityTestJob struct {
 	UpdatedAt   time.Time  `json:"updated_at"`
 	CompletedAt *time.Time `json:"completed_at,omitempty"`
 	DeadlineAt  time.Time  `json:"-"`
+	// TimeoutMS is the run's hard limit (deadline minus creation); zero on
+	// creation selects QualityTestDefaultTimeout.
+	TimeoutMS int64 `json:"timeout_ms"`
 	QualityTestMetrics
 }
 
@@ -170,15 +186,20 @@ func (db *DB) CreateQualityTestJob(ctx context.Context, job QualityTestJob) (*Qu
 	query := `INSERT INTO quality_test_jobs(slot,account_id,account_name,plan_type,channel,model,reasoning_effort,prompt,created_at,updated_at,deadline_at,preset_kind,preset_ref,preset_name)
 	 VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$9,$10,$11,$12,$13) ON CONFLICT DO NOTHING`
 	now := time.Now().UTC()
+	timeout := time.Duration(job.TimeoutMS) * time.Millisecond
+	if timeout <= 0 {
+		timeout = QualityTestDefaultTimeout
+	}
+	timeout = min(max(timeout, QualityTestMinTimeout), QualityTestMaxTimeout)
 	for slot := 1; slot <= QualityTestConcurrency; slot++ {
 		var id int64
 		err := db.withSQLiteWriteLock(ctx, func() error {
 			var err error
-			id, err = db.insertRowID(ctx, query+" RETURNING id", query, slot, job.AccountID, job.AccountName, job.PlanType, job.Channel, job.Model, job.ReasoningEffort, job.Prompt, db.timeArg(now), db.timeArg(now.Add(10*time.Minute)), job.PresetKind, job.PresetRef, job.PresetName)
+			id, err = db.insertRowID(ctx, query+" RETURNING id", query, slot, job.AccountID, job.AccountName, job.PlanType, job.Channel, job.Model, job.ReasoningEffort, job.Prompt, db.timeArg(now), db.timeArg(now.Add(timeout)), job.PresetKind, job.PresetRef, job.PresetName)
 			return err
 		})
 		if err == nil {
-			job.ID, job.Status, job.CreatedAt, job.UpdatedAt, job.DeadlineAt = id, "running", now, now, now.Add(10*time.Minute)
+			job.ID, job.Status, job.CreatedAt, job.UpdatedAt, job.DeadlineAt, job.TimeoutMS = id, "running", now, now, now.Add(timeout), timeout.Milliseconds()
 			return &job, nil
 		}
 		if !errors.Is(err, sql.ErrNoRows) {
@@ -228,6 +249,7 @@ func scanQualityTestJob(scanner interface{ Scan(...any) error }, detail bool) (*
 	if job.DeadlineAt, err = parseDBTimeValue(deadline); err != nil {
 		return nil, err
 	}
+	job.TimeoutMS = max(0, job.DeadlineAt.Sub(job.CreatedAt).Milliseconds())
 	value, err := parseDBNullTimeValue(completed)
 	if err != nil {
 		return nil, err

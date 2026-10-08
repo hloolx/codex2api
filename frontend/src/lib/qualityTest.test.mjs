@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { extractQualityTestHTML, qualityTestPreviewDocument, isQualityTestActive, qualityTestPlanTone, clampQualityTestFrameHeight, QUALITY_TEST_SIZE_SCRIPT, qualityTestFilterQuery } from './qualityTest.ts'
+import { extractQualityTestHTML, qualityTestPreviewDocument, isQualityTestActive, qualityTestPlanTone, qualityTestStatusKey, clampQualityTestFrameHeight, QUALITY_TEST_SIZE_SCRIPT, qualityTestFilterQuery } from './qualityTest.ts'
 import { readClaudeTestEvents } from './claudeConnectionTest.ts'
 
 test('quality preview extracts documents and SVG without rendering explanatory prose', () => {
@@ -58,4 +58,12 @@ test('history filter query only carries the active filters and keeps the model-d
   assert.equal(qualityTestFilterQuery(2), 'page=2&page_size=20')
   assert.equal(qualityTestFilterQuery(1, { plan: 'pro', model: 'gpt-5.5', effort: 'default', account_id: 7, preset: 'builtin:clock' }), 'page=1&page_size=20&plan=pro&model=gpt-5.5&effort=default&account_id=7&preset=builtin%3Aclock')
   assert.equal(qualityTestFilterQuery(1, { plan: '', model: '', effort: '', account_id: 0 }), 'page=1&page_size=20')
+})
+
+test('quality status key separates broken upstream streams from rejections', () => {
+  assert.equal(qualityTestStatusKey(null), 'idle')
+  assert.equal(qualityTestStatusKey({ status: 'error' }), 'error')
+  assert.equal(qualityTestStatusKey({ status: 'error', interrupted: true }), 'streamInterrupted')
+  assert.equal(qualityTestStatusKey({ status: 'completed', interrupted: true }), 'completed')
+  assert.equal(qualityTestStatusKey({ status: 'interrupted' }), 'interrupted')
 })

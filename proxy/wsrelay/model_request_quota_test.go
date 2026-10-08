@@ -91,9 +91,11 @@ func TestExecuteWebsocketModelQuotaRejectionReturnsUnsentLeaseToIdle(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	poolKey := manager.poolKey(account.ID(), wsURL, sessionID, "")
+	executor := NewExecutorWithManager(manager)
+	headers := executor.prepareWebsocketHeaders(context.Background(), account.AccessToken, account, account.AccountID, sessionID, key, nil, http.Header{}, nil, "")
+	poolKey := manager.poolKey(account.ID(), wsURL, websocketClientPoolKey(sessionID, headers), "")
 	session := NewSession(account.ID(), manager)
-	session.ID = sessionID
+	session.ID = websocketClientPoolKey(sessionID, headers)
 	session.SetConnected(true)
 	wc := NewWsConnection(conn, session, wsURL)
 	wc.PoolKey = poolKey
@@ -102,7 +104,6 @@ func TestExecuteWebsocketModelQuotaRejectionReturnsUnsentLeaseToIdle(t *testing.
 	manager.connections.Store(poolKey, wc)
 	manager.sessions.Store(poolKey, session)
 	wc.StartReadPump()
-	executor := NewExecutorWithManager(manager)
 
 	response, err := executor.ExecuteRequestViaWebsocket(freshContext(), account, []byte(`{"model":"gpt-6","input":"rejected"}`), sessionID, "", key, nil, http.Header{}, "")
 	if err == nil || response != nil || !strings.Contains(err.Error(), "weekly model request limit") {

@@ -37,13 +37,13 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { SegmentedPillGroup } from '@/components/ui/segmented-pill-group'
 import { DraftNumberInput } from '@/components/ui/draft-number-input'
-import { supportsImageBilling } from '../lib/imageBilling'
+import { mediaBillingUnit, supportsImageBilling, type MediaBillingUnit } from '../lib/imageBilling'
 import { cn } from '@/lib/utils'
 import { useToast } from '../hooks/useToast'
 import { postAdminSSE } from '../hooks/useOperationProgress'
 import { applyModelRefreshEvent, readModelRefreshSSE, type ModelRefreshProgress } from '../lib/modelRefreshStream'
 import { getErrorMessage } from '../utils/error'
-import type { ModelPricingOverride, OfficialPricingSyncConfig } from '@/types'
+import type { ModelPricingOverride, OfficialPricingSyncConfig, UserBillingMode } from '@/types'
 import {
   buildModelPricingPreview,
   type PricingPreviewRate,
@@ -56,6 +56,8 @@ type Row = {
   pricing: ModelPricingOverride
   canonical_model?: string
   is_alias?: boolean
+  /** Grok Imagine media rows are priced per image / per generated second, not per token. */
+  media_unit?: MediaBillingUnit
 }
 type SourceFilter = 'all' | 'custom' | 'synced' | 'default' | 'unsaved'
 type ChannelFilter = 'all' | 'codex' | 'grok' | 'antigravity' | 'claude'
@@ -138,6 +140,7 @@ function normalizePrice(value: unknown): number {
 
 function isDirty(draft: ModelPricingOverride | undefined, saved: ModelPricingOverride | undefined): boolean {
   if ((draft?.user_billing_mode || 'token') !== (saved?.user_billing_mode || 'token') || normalizePrice(draft?.image_unit_price) !== normalizePrice(saved?.image_unit_price)) return true
+  if (normalizePrice(draft?.media_unit_cost) !== normalizePrice(saved?.media_unit_cost)) return true
   for (const field of ALL_FIELDS) {
     if (normalizePrice(draft?.[field.key]) !== normalizePrice(saved?.[field.key])) return true
   }
@@ -171,7 +174,7 @@ function getOutputMultiplier(input: number, output: number): string | null {
   return ratio.toFixed(1).replace(/\.0$/, '')
 }
 
-const PREFERRED_MODEL_ORDER = ['gpt-6-astra', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna'] as const
+const PREFERRED_MODEL_ORDER = ['gpt-6-astra', 'gpt-6-sol', 'gpt-6-luna', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna'] as const
 
 function modelPreferredRank(model: string): number {
   const lower = model.trim().toLowerCase()
@@ -482,7 +485,11 @@ function ModelCatalogModal({
                           </span>
                         ) : null}
                         <span className="tabular-nums text-[11px] text-muted-foreground">
-                          ${formatPriceDisplay(normalizePrice(r.pricing.input))}/${formatPriceDisplay(normalizePrice(r.pricing.output))}
+                          {r.media_unit
+                            ? normalizePrice(r.pricing.media_unit_cost) > 0
+                              ? `$${formatPriceDisplay(normalizePrice(r.pricing.media_unit_cost))}${t(mediaCostUnitKey(r.media_unit))}`
+                              : t('settings.pricing.mediaBilling.unpriced')
+                            : `$${formatPriceDisplay(normalizePrice(r.pricing.input))}/$${formatPriceDisplay(normalizePrice(r.pricing.output))}`}
                         </span>
                       </span>
                     </button>
@@ -494,6 +501,84 @@ function ModelCatalogModal({
         )}
       </div>
     </Modal>
+  )
+}
+
+const USER_BILLING_MODES: UserBillingMode[] = ['token', 'per_image', 'per_video', 'per_second']
+
+function parseUserBillingMode(value: string): UserBillingMode {
+  return USER_BILLING_MODES.find(mode => mode === value) ?? 'token'
+}
+
+const MEDIA_MODE_LABEL: Record<UserBillingMode, string> = {
+  token: 'settings.pricing.mediaBilling.followUpstream',
+  per_image: 'settings.pricing.imageBilling.perImage',
+  per_video: 'settings.pricing.mediaBilling.perVideo',
+  per_second: 'settings.pricing.mediaBilling.perSecond',
+}
+
+const MEDIA_MODE_UNIT: Record<UserBillingMode, string> = {
+  token: '',
+  per_image: 'settings.pricing.perImageUnit',
+  per_video: 'settings.pricing.perVideoUnit',
+  per_second: 'settings.pricing.perSecondUnit',
+}
+
+function mediaCostUnitKey(unit: MediaBillingUnit): string {
+  return unit === 'second' ? 'settings.pricing.perSecondUnit' : 'settings.pricing.perImageUnit'
+}
+
+// MediaPricingSummary 在折叠行上展示媒体模型的上游单位成本与用户计费方式;
+// 单位成本为 0 时明确标"未定价",不让管理员误以为按 token 或免费结算。
+function MediaPricingSummary({ unit, draft }: { unit: MediaBillingUnit; draft: ModelPricingOverride }) {
+  const { t } = useTranslation()
+  const cost = normalizePrice(draft.media_unit_cost)
+  const mode = draft.user_billing_mode || 'token'
+  return (
+    <span className="pricing-image-summary">
+      {cost > 0
+        ? <strong>${formatPriceDisplay(cost)}<small>{t(mediaCostUnitKey(unit))}</small></strong>
+        : <strong className="pricing-media-unpriced"><AlertTriangle size={13} aria-hidden="true" />{t('settings.pricing.mediaBilling.unpriced')}</strong>}
+      <span>{mode === 'token' ? t(MEDIA_MODE_LABEL.token) : `${t(MEDIA_MODE_LABEL[mode])} · $${formatPriceDisplay(normalizePrice(draft.image_unit_price))}${t(MEDIA_MODE_UNIT[mode])}`}</span>
+    </span>
+  )
+}
+
+function MediaPricingEditor({ unit, draft, saved, busy, onFieldChange, onRevertField }: {
+  unit: MediaBillingUnit
+  draft: ModelPricingOverride
+  saved: ModelPricingOverride
+  busy: boolean
+  onFieldChange: (key: keyof ModelPricingOverride, value: string) => void
+  onRevertField: (key: keyof ModelPricingOverride) => void
+}) {
+  const { t } = useTranslation()
+  const costId = useId()
+  const mode = draft.user_billing_mode || 'token'
+  const modes: UserBillingMode[] = unit === 'second' ? ['token', 'per_video', 'per_second'] : ['token', 'per_image']
+  const cost = normalizePrice(draft.media_unit_cost)
+  const costChanged = cost !== normalizePrice(saved.media_unit_cost)
+  const unitName = t(unit === 'second' ? 'settings.pricing.mediaBilling.unitSecond' : 'settings.pricing.mediaBilling.unitImage')
+  const priceLabel = mode === 'per_second' ? 'settings.pricing.mediaBilling.secondUnitPrice' : mode === 'per_video' ? 'settings.pricing.mediaBilling.videoUnitPrice' : 'settings.pricing.imageBilling.unitPrice'
+  return (
+    <div className="pricing-media-editor">
+      <fieldset className="pricing-image-billing" disabled={busy} aria-label={t('settings.pricing.mediaBilling.title')}>
+        <div><h5>{t('settings.pricing.mediaBilling.title')}</h5><SegmentedPillGroup label={t('settings.pricing.mediaBilling.title')} value={mode} options={modes.map(value => ({ value, label: t(MEDIA_MODE_LABEL[value]) }))} onChange={next => onFieldChange('user_billing_mode', next)} /></div>
+        {mode !== 'token'
+          ? <div className="pricing-image-price"><label><span>{t(priceLabel)}</span><DraftNumberInput aria-label={t(priceLabel)} value={draft.image_unit_price || 0} integer={false} min={0} step="0.001" onValueChange={value => onFieldChange('image_unit_price', String(value))} /></label><p>{t(unit === 'second' ? 'settings.pricing.mediaBilling.videoHint' : 'settings.pricing.mediaBilling.imageHint')}</p></div>
+          : <p>{t('settings.pricing.mediaBilling.followUpstreamHint', { unit: unitName })}</p>}
+      </fieldset>
+      <fieldset className="pricing-image-billing" disabled={busy} aria-label={t('settings.pricing.mediaBilling.upstreamCost')}>
+        <div><h5>{t('settings.pricing.mediaBilling.upstreamCost')}</h5>{cost <= 0 && <span className="pricing-media-unpriced"><AlertTriangle size={13} aria-hidden="true" />{t('settings.pricing.mediaBilling.unpriced')}</span>}</div>
+        <div className="pricing-image-price">
+          <label htmlFor={costId}>
+            <span>{t('settings.pricing.mediaBilling.unitCost', { unit: unitName })}{costChanged && <button type="button" className="pricing-media-revert" onClick={() => onRevertField('media_unit_cost')} aria-label={t('settings.pricing.revertPrice', { field: t('settings.pricing.mediaBilling.upstreamCost'), value: normalizePrice(saved.media_unit_cost) })}><Undo2 size={12} aria-hidden="true" /></button>}</span>
+            <DraftNumberInput id={costId} value={cost} integer={false} min={0} emptyValue={0} step="0.001" onValueChange={value => onFieldChange('media_unit_cost', String(value))} />
+          </label>
+          <p>{t(cost > 0 ? 'settings.pricing.mediaBilling.upstreamCostHint' : 'settings.pricing.mediaBilling.unpricedHint', { unit: unitName })}</p>
+        </div>
+      </fieldset>
+    </div>
   )
 }
 
@@ -521,10 +606,11 @@ function PricingModelRow({ row: r, draft, expanded, advancedOpen, busy, isNew, h
   const outputVal = normalizePrice(draft.output)
   const multiplier = getOutputMultiplier(inputVal, outputVal)
   const pricingModel = (r.canonical_model?.trim() || r.model.trim()).toLowerCase()
+  const mediaUnit = r.media_unit || mediaBillingUnit(pricingModel)
   const imageModel = supportsImageBilling(pricingModel)
   const perImage = imageModel && draft.user_billing_mode === 'per_image'
   const primaryFields = imageModel ? [...PRIMARY_FIELDS.filter(field => !field.key.startsWith('cache_write')), ...(isImage25Model(pricingModel) ? IMAGE_FIELDS : [])] : PRIMARY_FIELDS
-  const supportsLongContextPricing = pricingModel !== 'gpt-6-astra' && !imageModel
+  const supportsLongContextPricing = !imageModel
   const advancedFields = imageModel ? [] : supportsLongContextPricing ? ADVANCED_FIELDS : ADVANCED_FIELDS.filter(field => !field.key.includes('_long'))
   const hasLongContextPricing = supportsLongContextPricing && (normalizePrice(draft.long_context_threshold_tokens) > 0 || normalizePrice(draft.input_long) > 0 || normalizePrice(draft.cached_input_long) > 0 || normalizePrice(draft.output_long) > 0)
   const advancedGroups = [
@@ -550,7 +636,9 @@ function PricingModelRow({ row: r, draft, expanded, advancedOpen, busy, isNew, h
             </span>
           </span>
         </span>
-        {perImage ? (
+        {mediaUnit ? (
+          <MediaPricingSummary unit={mediaUnit} draft={draft} />
+        ) : perImage ? (
           <span className="pricing-image-summary"><strong>${formatPriceDisplay(normalizePrice(draft.image_unit_price))}<small>{t('settings.pricing.perImageUnit')}</small></strong><span>{t('settings.pricing.imageBilling.perImage')}</span></span>
         ) : (
           <span className="pricing-row-prices">
@@ -558,19 +646,20 @@ function PricingModelRow({ row: r, draft, expanded, advancedOpen, busy, isNew, h
           </span>
         )}
         <span className="pricing-row-edit"><span>{t(expanded ? 'settings.pricing.closeEditor' : 'settings.pricing.editPrices')}</span><ChevronDown size={16} className={expanded ? 'is-open' : ''} aria-hidden="true" /></span>
-        <span id={`${editorId}-summary`} className="sr-only">{perImage ? `${t('settings.pricing.imageBilling.unitPrice')}: $${formatPriceDisplay(normalizePrice(draft.image_unit_price))}` : t('settings.pricing.summaryPrices', { input: formatPriceDisplay(inputVal), cached: formatPriceDisplay(normalizePrice(draft.cached_input)), output: formatPriceDisplay(outputVal) })}. {t(source.labelKey)}. {dirty ? t('settings.pricing.unsaved') : ''} {isNew ? t('settings.pricing.newBadge') : ''} {r.is_alias && r.canonical_model ? t('settings.pricing.aliasOf', { model: r.canonical_model }) : ''}</span>
+        <span id={`${editorId}-summary`} className="sr-only">{mediaUnit ? `${t('settings.pricing.mediaBilling.upstreamCost')}: ${normalizePrice(draft.media_unit_cost) > 0 ? `$${formatPriceDisplay(normalizePrice(draft.media_unit_cost))}${t(mediaCostUnitKey(mediaUnit))}` : t('settings.pricing.mediaBilling.unpriced')}` : perImage ? `${t('settings.pricing.imageBilling.unitPrice')}: $${formatPriceDisplay(normalizePrice(draft.image_unit_price))}` : t('settings.pricing.summaryPrices', { input: formatPriceDisplay(inputVal), cached: formatPriceDisplay(normalizePrice(draft.cached_input)), output: formatPriceDisplay(outputVal) })}. {t(source.labelKey)}. {dirty ? t('settings.pricing.unsaved') : ''} {isNew ? t('settings.pricing.newBadge') : ''} {r.is_alias && r.canonical_model ? t('settings.pricing.aliasOf', { model: r.canonical_model }) : ''}</span>
       </button>
       <div id={editorId} hidden={!expanded}>
         {expanded && (
           <div className="pricing-editor">
             <div className="pricing-editor-heading"><span><SlidersHorizontal size={15} aria-hidden="true" />{t('settings.pricing.editPrices')}</span><span>{t('settings.pricing.editHint')}</span><span className="pricing-unit">{t('settings.pricing.unitHint')}</span></div>
-            {imageModel && (
+            {mediaUnit && <MediaPricingEditor unit={mediaUnit} draft={draft} saved={r.pricing} busy={busy} onFieldChange={onFieldChange} onRevertField={onRevertField} />}
+            {!mediaUnit && imageModel && (
               <fieldset className="pricing-image-billing" disabled={busy} aria-label={t('settings.pricing.imageBilling.title')}>
                 <div><h5>{t('settings.pricing.imageBilling.title')}</h5><SegmentedPillGroup label={t('settings.pricing.imageBilling.title')} value={draft.user_billing_mode || 'token'} options={[{ value: 'token', label: t('settings.pricing.imageBilling.token') }, { value: 'per_image', label: t('settings.pricing.imageBilling.perImage') }]} onChange={mode => onFieldChange('user_billing_mode', mode)} /></div>
                 {perImage ? <div className="pricing-image-price"><label><span>{t('settings.pricing.imageBilling.unitPrice')}</span><DraftNumberInput aria-label={t('settings.pricing.imageBilling.unitPrice')} value={draft.image_unit_price || 0} integer={false} min={0} step="0.001" onValueChange={value => onFieldChange('image_unit_price', String(value))} /></label><p>{t('settings.pricing.imageBilling.hint')}</p></div> : <p>{t('settings.pricing.imageBilling.tokenHint')}</p>}
               </fieldset>
             )}
-            <div className="pricing-editor-layout">
+            {!mediaUnit && <div className="pricing-editor-layout">
               <fieldset className="pricing-editor-fields" disabled={busy}>
                 <legend>{t(perImage ? 'settings.pricing.imageBilling.upstreamRates' : 'settings.pricing.groupStandard')}</legend>
                 <div className="pricing-base-fields">{primaryFields.map(field => priceInput(field))}</div>
@@ -590,7 +679,7 @@ function PricingModelRow({ row: r, draft, expanded, advancedOpen, busy, isNew, h
                 )}
               </fieldset>
               <BillingRulePreview pricing={draft} />
-            </div>
+            </div>}
             <div className="pricing-editor-footer">
               <div className="pricing-editor-notes">{r.is_alias && r.canonical_model ? <span><Link2 size={13} aria-hidden="true" />{t('settings.pricing.aliasOf', { model: r.canonical_model })}</span> : <span><Check size={13} aria-hidden="true" />{t(source.labelKey)}</span>}{multiplier && <span>{t('settings.pricing.outputRatio', { ratio: multiplier })}</span>}</div>
               <div className="pricing-editor-actions">
@@ -997,7 +1086,7 @@ export default function ModelPricing() {
                 <div className="pricing-channel-heading"><ChannelLogo channel={group.channel} size={18} /><h3>{CHANNEL_LABEL[group.channel]}</h3><span>{group.rows.length}</span><small>{t('settings.pricing.unitHint')}</small></div>
                 <div className="pricing-column-head" aria-hidden="true"><span>{t('settings.pricing.modelColumn')}</span><span className="pricing-column-rates"><span>{t('settings.pricing.input')}</span><span>{t('settings.pricing.cached')}</span><span>{t('settings.pricing.output')}</span></span><span /></div>
                 {group.rows.map(r => <PricingModelRow key={r.model} row={r} draft={drafts[r.model] ?? {}} expanded={expandedModels[r.model] ?? false} advancedOpen={expandedAdvanced[r.model] ?? false} busy={savingModel === r.model || bulkSaving} isNew={newModels.has(r.model.toLowerCase())} highlighted={jumpedModel === r.model.toLowerCase()} onToggle={() => setExpandedModels(prev => ({ ...prev, [r.model]: !prev[r.model] }))} onToggleAdvanced={() => setExpandedAdvanced(prev => ({ ...prev, [r.model]: !prev[r.model] }))} onFieldChange={(key, value) => {
-                  if (key === 'user_billing_mode') setDrafts(prev => ({ ...prev, [r.model]: { ...prev[r.model], user_billing_mode: value === 'per_image' ? 'per_image' : 'token' } }))
+                  if (key === 'user_billing_mode') setDrafts(prev => ({ ...prev, [r.model]: { ...prev[r.model], user_billing_mode: parseUserBillingMode(value) } }))
                   else setField(r.model, key, value)
                 }} onRevertField={key => revertField(r.model, key)} onSave={() => void save(r.model)} onReset={() => void reset(r.model)} onDiscard={() => setDrafts(prev => ({ ...prev, [r.model]: { ...r.pricing } }))} />)}
               </section>

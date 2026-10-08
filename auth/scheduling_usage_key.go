@@ -106,11 +106,12 @@ func antigravitySchedulingUsedPercent(q AntigravityQuotaSnapshot) (float64, bool
 }
 
 // applyAntigravityQuotaSchedulingLocked 把持久化的 antigravity_quota 凭据投影成
-// 内存里的调度排序键。调用方持有 a.mu 或账号尚未发布。
+// 内存里的调度排序键,并顺带记下各模型的最大输出上限。调用方持有 a.mu 或账号尚未发布。
 func (a *Account) applyAntigravityQuotaSchedulingLocked(raw string) {
 	a.antigravityQuotaValid = false
 	a.antigravityQuotaUsedPercent = 0
 	a.antigravityQuotaObservedAt = time.Time{}
+	a.antigravityModelMaxOutput = nil
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return
@@ -118,6 +119,16 @@ func (a *Account) applyAntigravityQuotaSchedulingLocked(raw string) {
 	var snapshot AntigravityQuotaSnapshot
 	if err := json.Unmarshal([]byte(raw), &snapshot); err != nil {
 		return
+	}
+	for _, model := range snapshot.Models {
+		id := strings.ToLower(strings.TrimSpace(model.ModelID))
+		if id == "" || model.MaxOutputTokens == nil || *model.MaxOutputTokens <= 0 {
+			continue
+		}
+		if a.antigravityModelMaxOutput == nil {
+			a.antigravityModelMaxOutput = make(map[string]int)
+		}
+		a.antigravityModelMaxOutput[id] = *model.MaxOutputTokens
 	}
 	pct, ok := antigravitySchedulingUsedPercent(snapshot)
 	if !ok {

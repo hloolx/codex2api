@@ -97,7 +97,7 @@ func TestDeriveStableCodexUUIDv7(t *testing.T) {
 func TestConvergedIdentityUUIDVersionsAndTimestamp(t *testing.T) {
 	const addedAtMilli int64 = 1780000000000
 	account := &auth.Account{DBID: 42, CodexFingerprintMode: auth.CodexFingerprintModeSession}
-	account.AddedAt = addedAtMilli * int64(time.Millisecond)
+	account.AddedAt.Store(addedAtMilli * int64(time.Millisecond))
 
 	ids := resolveCodexFingerprintIDs(account, codexClientHeaders("", "client-session"))
 	if ids == nil {

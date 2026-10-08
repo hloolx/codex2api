@@ -23,6 +23,7 @@ export interface QuickConfigAccountSource {
   base_concurrency_override?: number | null;
   scheduler_priority?: number | null;
   skip_warm_tier?: boolean;
+  keep_concurrency_on_degrade?: boolean;
   proxy_url?: string | null;
   custom_headers?: Record<string, string> | null;
   tags?: string[] | null;
@@ -39,6 +40,7 @@ export interface QuickConfigFormState {
   concurrencyInput: string;
   schedulerPriorityInput: string;
   skipWarmTier: boolean;
+  keepConcurrencyOnDegrade: boolean;
   proxyUrl: string;
   customHeadersText: string;
   tags: string[];
@@ -65,6 +67,7 @@ export function normalizeCodexFingerprintMode(
 ): CodexFingerprintMode {
   if (
     value === "off" ||
+    value === "single_machine_multi_window" ||
     value === "device" ||
     value === "session" ||
     value === "full"
@@ -122,6 +125,7 @@ export function formStateFromAccount(
     schedulerPriorityInput:
       account.scheduler_priority != null ? String(account.scheduler_priority) : "",
     skipWarmTier: account.skip_warm_tier ?? false,
+    keepConcurrencyOnDegrade: account.keep_concurrency_on_degrade ?? false,
     proxyUrl: account.proxy_url ?? "",
     customHeadersText: formatCustomHeadersText(account.custom_headers),
     tags: account.tags ?? [],
@@ -199,6 +203,7 @@ export function buildQuickConfigSavePayload(
         form.concurrencyMode === "custom" ? parsedBaseConcurrency : null,
       scheduler_priority: parsedSchedulerPriority,
       skip_warm_tier: form.skipWarmTier,
+      keep_concurrency_on_degrade: form.keepConcurrencyOnDegrade,
       proxy_url: form.proxyUrl.trim() || null,
       custom_headers: parsedHeaders.value,
       upstream_request_id_header: form.upstreamRequestIdHeader.trim(),
