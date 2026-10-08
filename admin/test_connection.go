@@ -213,8 +213,8 @@ func (h *Handler) testConnection(c *gin.Context, quality *qualityTestRequest) {
 	} else if isOpenAIResponsesAccount {
 		resp, reqErr = proxy.ExecuteRelayStyleRequest(c.Request.Context(), account, payload, h.store.ResolveProxyForAccount(account), nil)
 	} else if quality != nil {
-		// 降智检测是一次性长生成(常达数分钟),不需要 WS 续链;强制走独立 HTTP SSE,
-		// 不受"强制 WebSocket"影响,也不占用/依赖池化长连接。
+		// Quality probes use independent HTTP SSE without occupying a pooled
+		// WebSocket or inheriting a previous conversation.
 		resp, reqErr = proxy.ExecuteRequest(c.Request.Context(), account, payload, "", h.store.ResolveProxyForAccount(account), "", nil, nil, false)
 	} else {
 		resp, reqErr = proxy.ExecuteRequest(c.Request.Context(), account, payload, "", h.store.ResolveProxyForAccount(account), "", nil, nil)
@@ -395,7 +395,7 @@ func (h *Handler) testConnection(c *gin.Context, quality *qualityTestRequest) {
 			}
 			// Successful tests reset failure/cooldown state; the scheduler still enforces usage limits.
 			// Temporary recycle-bin accounts must not update scheduling state.
-			if !isTransient && (isOpenAIResponsesAccount || usageState.UsageWindowLimitsIgnored || (!usageState.Premium5hRateLimited && (!usageState.HasUsage7d || usageState.UsagePct7d < 100))) {
+			if !isTransient && (quality == nil || !quality.modelQualityProbe) && (isOpenAIResponsesAccount || usageState.UsageWindowLimitsIgnored || (!usageState.Premium5hRateLimited && (!usageState.HasUsage7d || usageState.UsagePct7d < 100))) {
 				h.store.RecordManualTestSuccess(account, time.Since(start))
 			}
 			if isTransient {

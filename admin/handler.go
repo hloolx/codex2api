@@ -53,6 +53,7 @@ type Handler struct {
 	imageQueue         *imageJobQueue
 	qualityTestContext context.Context
 	qualityTestWG      sync.WaitGroup
+	modelQuality       *modelQualityRunner
 	store              *auth.Store
 	modelRefreshFuncs  map[string]channelModelRefreshFunc // nil = 各渠道默认实现；测试注入用
 	proxyRiskJobsMu    sync.RWMutex
@@ -1240,6 +1241,9 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.GET("/accounts/:id/quality-test/options", h.QualityTestOptions)
 	api.POST("/accounts/:id/quality-test", h.CreateQualityTestJob)
 	api.GET("/quality-tests", h.ListQualityTests)
+	api.GET("/model-quality", h.GetModelQuality)
+	api.PUT("/model-quality", h.UpdateModelQuality)
+	api.POST("/model-quality/retest", h.RetestModelQuality)
 	h.registerStatePoolRoutes(api)
 	api.GET("/quality-tests/:id", h.GetQualityTest)
 	api.POST("/quality-tests/:id/cancel", h.CancelQualityTest)

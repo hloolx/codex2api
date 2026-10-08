@@ -374,7 +374,7 @@ func accountFilterForModel(model string) auth.AccountFilter {
 		if account.IsRelayStyle() {
 			return false
 		}
-		if model != "" && account.IsModelRateLimited(model) {
+		if model != "" && (account.IsModelRateLimited(model) || account.IsModelQualityBlocked(model)) {
 			return false
 		}
 		if !account.SupportsCodexModel(model) {

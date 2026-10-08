@@ -1,0 +1,45 @@
+.model-quality { display: flex; flex-direction: column; gap: 28px; }
+.model-quality h2 { margin: 0; font-size: 16px; font-weight: 650; }
+.model-quality p { font-size: 13px; line-height: 1.7; color: var(--color-muted-foreground); }
+.model-quality-settings { padding: 24px; border: 1px solid var(--color-border); border-radius: 14px; background: var(--color-card); }
+.model-quality-toggle { display: flex; justify-content: space-between; gap: 24px; align-items: center; }
+.model-quality-toggle p { max-width: 70ch; margin: 8px 0 0; }
+.model-quality-switch { display: flex; align-items: center; gap: 12px; flex-shrink: 0; font-size: 13px; }
+.model-quality-models { margin-top: 24px; }
+.model-quality-models label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 8px; }
+.model-quality-model-controls { display: flex; align-items: center; gap: 16px; }
+.model-quality-model-controls > :first-child { width: min(100%, 340px); }
+.model-quality-model-controls > span { font-size: 12px; color: var(--color-muted-foreground); }
+.model-quality-selected { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.model-quality-selected > span { display: inline-flex; align-items: center; gap: 8px; padding: 4px 6px 4px 12px; border: 1px solid var(--color-border); border-radius: 8px; font-size: 12px; overflow-wrap: anywhere; }
+.model-quality-policy { display: flex; align-items: flex-start; gap: 8px; border-top: 1px solid var(--color-border); padding-top: 16px; margin-top: 20px; }
+.model-quality-policy svg { flex-shrink: 0; margin-top: 3px; }
+.model-quality-off { margin-bottom: 0; }
+.model-quality-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.model-quality-toolbar > div { display: flex; gap: 8px; }
+.model-quality-toolbar input { width: 240px; }
+.model-quality-legend { display: flex; flex-wrap: wrap; gap: 16px; margin: 12px 0 20px; font-size: 12px; color: var(--color-muted-foreground); }
+.model-quality-legend span, .model-quality-verdict-heading > span { display: inline-flex; align-items: center; gap: 6px; }
+.model-quality-legend svg, .model-quality-verdict-heading svg { width: 14px; height: 14px; flex-shrink: 0; }
+.model-quality-pass { color: light-dark(#18713d, #78d9a0); }
+.model-quality-fail { color: light-dark(#b42318, #ff9990); }
+.model-quality-pending, .model-quality-unsupported { color: var(--color-muted-foreground); }
+.model-quality-account { padding: 20px 0; border-top: 1px solid var(--color-border); }
+.model-quality-account-name { display: flex; align-items: baseline; flex-wrap: wrap; gap: 10px; font-size: 14px; margin-bottom: 12px; }
+.model-quality-account-name strong { overflow-wrap: anywhere; }
+.model-quality-account-name > span { font-size: 12px; color: var(--color-muted-foreground); }
+.model-quality-verdicts { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 310px), 1fr)); gap: 12px; }
+.model-quality-verdict { border-radius: 12px; background: var(--color-muted); padding: 16px; min-width: 0; }
+.model-quality-verdict-heading { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; font-size: 12px; }
+.model-quality-verdict-heading strong { font-weight: 600; overflow-wrap: anywhere; }
+.model-quality-verdict-detail { display: flex; flex-direction: column; gap: 4px; margin: 12px 0; font-size: 12px; color: var(--color-muted-foreground); font-variant-numeric: tabular-nums; }
+.model-quality-verdict p { display: flex; align-items: flex-start; gap: 6px; overflow-wrap: anywhere; margin: 8px 0 12px; font-size: 12px; }
+.model-quality-verdict p svg { flex-shrink: 0; margin-top: 3px; }
+.model-quality-empty { padding: 48px 16px; text-align: center; border-top: 1px solid var(--color-border); }
+@media (max-width: 640px) {
+  .model-quality-settings { padding: 16px; }
+  .model-quality-toggle, .model-quality-toolbar { align-items: stretch; flex-direction: column; gap: 16px; }
+  .model-quality-switch { justify-content: space-between; }
+  .model-quality-toolbar input { width: 100%; min-width: 0; }
+  .model-quality-model-controls { align-items: stretch; flex-direction: column; gap: 8px; }
+}

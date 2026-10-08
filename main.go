@@ -364,13 +364,21 @@ func main() {
 	store.TriggerAutoCleanupAsync()
 	defer store.Stop()
 	backgroundCtx, cancelBackground := context.WithCancel(context.Background())
+	defer func() {
+		cancelBackground()
+		adminHandler.WaitModelQuality()
+	}()
 	adminHandler.StartQualityTests(backgroundCtx)
+	if err := adminHandler.StartModelQuality(backgroundCtx); err != nil {
+		cancelBackground()
+		log.Printf("Model quality guard startup failed: %v", err)
+		return
+	}
 	if err := adminHandler.StartStatePool(backgroundCtx); err != nil {
 		log.Printf("State pool startup failed: %v", err)
 		return
 	}
 	defer adminHandler.StopStatePool()
-	defer cancelBackground()
 	if !proxy.StartResponseCacheSettingsPoller(backgroundCtx, db) {
 		log.Fatalf("启动响应缓存设置同步失败")
 	}
@@ -676,6 +684,7 @@ func main() {
 	adminHandler.WaitAutoResetCredits()
 	adminHandler.WaitAutoActivate5hWindow()
 	adminHandler.WaitQualityTests()
+	adminHandler.WaitModelQuality()
 	adminHandler.StopStatePool()
 	wsKeepalive.Stop()
 	wsrelay.ShutdownExecutor()
