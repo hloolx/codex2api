@@ -365,6 +365,11 @@ func main() {
 	defer store.Stop()
 	backgroundCtx, cancelBackground := context.WithCancel(context.Background())
 	adminHandler.StartQualityTests(backgroundCtx)
+	if err := adminHandler.StartModelQuality(backgroundCtx); err != nil {
+		cancelBackground()
+		log.Printf("Model quality guard startup failed: %v", err)
+		return
+	}
 	if err := adminHandler.StartStatePool(backgroundCtx); err != nil {
 		log.Printf("State pool startup failed: %v", err)
 		return
@@ -676,6 +681,7 @@ func main() {
 	adminHandler.WaitAutoResetCredits()
 	adminHandler.WaitAutoActivate5hWindow()
 	adminHandler.WaitQualityTests()
+	adminHandler.WaitModelQuality()
 	adminHandler.StopStatePool()
 	wsKeepalive.Stop()
 	wsrelay.ShutdownExecutor()

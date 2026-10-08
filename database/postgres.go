@@ -469,6 +469,9 @@ func New(driver string, dsn string, schema ...string) (*DB, error) {
 		if err := db.ensureQualityTestSchema(ctx); err != nil {
 			return nil, fmt.Errorf("初始化检测记录表失败: %w", err)
 		}
+		if err := db.ensureModelQualitySchema(ctx); err != nil {
+			return nil, err
+		}
 		if err := db.ensureStatePoolSchema(ctx); err != nil {
 			return nil, err
 		}

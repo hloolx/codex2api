@@ -38,9 +38,10 @@ addEventListener('message', function receive(event) {
 }
 
 type qualityTestRequest struct {
-	Model           string `json:"model"`
-	Prompt          string `json:"prompt"`
-	ReasoningEffort string `json:"reasoning_effort"`
+	modelQualityProbe bool
+	Model             string `json:"model"`
+	Prompt            string `json:"prompt"`
+	ReasoningEffort   string `json:"reasoning_effort"`
 	// PromptID references the custom preset the prompt came from; PresetKey names a
 	// built-in one. PresetName is the client's display name, kept as a fallback only.
 	PromptID   int64  `json:"prompt_id,omitempty"`
@@ -161,7 +162,10 @@ func (h *Handler) validateQualityTestForAccount(ctx context.Context, account *au
 }
 
 func buildQualityTestPayload(account *auth.Account, model string, req qualityTestRequest, securityCfg auth.ClaudeSecurityConfig) ([]byte, error) {
-	const instructions = "Return a complete, self-contained HTML document for the user's request. Include all SVG, CSS and JavaScript inline. Do not use external resources. Return only HTML, without Markdown fences or explanations."
+	instructions := "Return a complete, self-contained HTML document for the user's request. Include all SVG, CSS and JavaScript inline. Do not use external resources. Return only HTML, without Markdown fences or explanations."
+	if req.modelQualityProbe {
+		instructions = `Solve the problem carefully. Return only a JSON object with one integer field named "answer". No explanations or Markdown.`
+	}
 	body := map[string]any{"model": model, "stream": true}
 	if account.IsClaudeOAuth() {
 		maxTokens := int64(32768)

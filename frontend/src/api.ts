@@ -1,4 +1,5 @@
 import type { CodexPathSnapshot } from "./types"
+import type { ModelQualityConfig, ModelQualityData } from './lib/modelQuality'
 import { readCodexProbeEvents, type CodexProbeBatch, type CodexProbeEvent, type CodexProbeLevel, type CodexProbeResult } from './lib/codexProbe.ts'
 import { qualityTestFilterQuery, type QualityTestJob, type QualityTestJobsFilter, type QualityTestJobsResponse, type QualityTestPrompt } from './lib/qualityTest.ts'
 import type { StateImportPreview, StatePackage, StatePoolData } from './lib/statePool.ts'
@@ -1579,6 +1580,12 @@ export const api = {
     request<{ job: QualityTestJob }>(`/accounts/${accountId}/quality-test`, { method: 'POST', body: JSON.stringify(body) }),
   getQualityTests: (page = 1, filter: QualityTestJobsFilter = {}, signal?: AbortSignal) =>
     request<QualityTestJobsResponse>(`/quality-tests?${qualityTestFilterQuery(page, filter)}`, { signal }),
+  getModelQuality: (page: number, search: string, signal?: AbortSignal) =>
+    request<ModelQualityData>(`/model-quality?page=${page}&search=${encodeURIComponent(search)}`, { signal }),
+  setModelQuality: (config: ModelQualityConfig) =>
+    request<{ config: ModelQualityConfig }>('/model-quality', { method: 'PUT', body: JSON.stringify(config) }),
+  retestModelQuality: (account_id: number, model: string) =>
+    request('/model-quality/retest', { method: 'POST', body: JSON.stringify({ account_id, model }) }),
   getQualityTest: (id: number, signal?: AbortSignal) =>
     request<{ job: QualityTestJob }>(`/quality-tests/${id}`, { signal }),
   cancelQualityTest: (id: number) =>

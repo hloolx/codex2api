@@ -156,6 +156,7 @@ func NormalizeTestContent(content string) string {
 
 // Account 运行时账号状态
 type Account struct {
+	modelQuality              *modelQualityGate
 	codexRoutes               codexAccountRoutes
 	stateAdmissionMu          sync.Mutex
 	stateBusinessLimit        int64
@@ -3522,6 +3523,7 @@ func (a *Account) GetLastUsedAt() time.Time {
 
 // Store 多账号管理器（数据库 + Token 缓存）
 type Store struct {
+	modelQuality                       modelQualityGate
 	proxyAuditLabels                   map[string]ProxyAuditLabel
 	mu                                 sync.RWMutex
 	accountMutationMu                  sync.Mutex // serializes account-set and scheduler mutations without nesting their locks
@@ -5596,6 +5598,7 @@ func (s *Store) buildAccountFromRow(ctx context.Context, row *database.AccountRo
 	}
 
 	account := &Account{
+		modelQuality:                 &s.modelQuality,
 		DBID:                         row.ID,
 		CredentialGeneration:         row.CredentialGeneration,
 		CredentialFamilyID:           row.CredentialFamilyID,
@@ -9144,6 +9147,7 @@ func (s *Store) AddAccounts(accounts []*Account) {
 		}
 		acc.mu.Lock()
 		acc.grokRuntimeSink = s
+		acc.modelQuality = &s.modelQuality
 		acc.attachCodexRouteDB(s.db)
 		acc.recomputeEffectiveIgnoreUsageLimitStatus(ignoreUsageLimit)
 		acc.recomputeEffectiveGroupBaseConcurrency(s)
