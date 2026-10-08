@@ -21,20 +21,28 @@ func NativeIPv6Account(account *auth.Account) bool {
 	return account != nil && !account.IsRelayStyle() && !resinCarriesEgress(account)
 }
 
-func wrapIPv6Client(account *auth.Account, base *http.Client, replay, forceUTLS bool) *http.Client {
-	m := egressipv6.Current()
-	if m == nil || !NativeIPv6Account(account) {
-		return base
-	}
-	return egressipv6.WrapClient(m, account.ID(), base, func(ip string) http.RoundTripper { return sourceIPv6Transport(account.ID(), ip, forceUTLS) }, replay)
-}
-
-func sourceIPv6Transport(id int64, ip string, forceUTLS bool) http.RoundTripper {
+func wrapIPv6Client(account *auth.Account, base *http.Client, replay, forceUTLS bool, scopes ...string) *http.Client {
 	mode := codexTransportModeFromEnv()
 	if forceUTLS {
 		mode = codexTransportModeUTLSChrome
 	}
-	key := fmt.Sprintf("ipv6|%d|%s|%s", id, ip, mode)
+	scope := "responses"
+	if len(scopes) > 0 {
+		scope = scopes[0]
+	}
+	return wrapScopedIPv6Client(account, base, replay, mode, scope)
+}
+
+func wrapScopedIPv6Client(account *auth.Account, base *http.Client, replay bool, mode, scope string) *http.Client {
+	m := egressipv6.Current()
+	if m == nil || !NativeIPv6Account(account) {
+		return base
+	}
+	return egressipv6.WrapClient(m, account.ID(), base, func(ip string) http.RoundTripper { return sourceIPv6Transport(account.ID(), ip, mode, scope) }, replay)
+}
+
+func sourceIPv6Transport(id int64, ip, mode, scope string) http.RoundTripper {
+	key := fmt.Sprintf("ipv6|%d|%s|%s|%s", id, ip, mode, scope)
 	if v, ok := clientPool.Load(key); ok {
 		entry := v.(*poolEntry)
 		entry.touch()
@@ -75,7 +83,11 @@ func (e errorTransport) RoundTrip(*http.Request) (*http.Response, error) { retur
 // OAuth refresh must never replay a potentially consumed refresh token.
 func WrapOAuthIPv6Client(id int64, base *http.Client, forceUTLS bool) *http.Client {
 	if m := egressipv6.Current(); m != nil && !IsResinEnabled() {
-		return egressipv6.WrapClient(m, id, base, func(ip string) http.RoundTripper { return sourceIPv6Transport(id, ip, forceUTLS) }, false)
+		mode, scope := codexTransportModeStandard, "oauth-refresh"
+		if forceUTLS {
+			mode, scope = codexTransportModeUTLSChrome, "oauth-session"
+		}
+		return egressipv6.WrapClient(m, id, base, func(ip string) http.RoundTripper { return sourceIPv6Transport(id, ip, mode, scope) }, false)
 	}
 	return base
 }

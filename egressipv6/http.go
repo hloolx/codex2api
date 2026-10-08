@@ -76,6 +76,14 @@ func (t *transport) RoundTrip(req *http.Request) (*http.Response, error) {
 		}
 		if resp != nil && resp.StatusCode == 200 && t.replay && strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream") {
 			reason, safeReplay = inspectSSEPrefix(resp, route.Config.Retry5xx)
+			if reason == "" {
+				sourceIP := route.Binding.IP
+				resp.Body = &observedSSEBody{ReadCloser: resp.Body, retry5xx: route.Config.Retry5xx, onFailure: func(reason string) {
+					if req.Context().Err() == nil {
+						_, _ = t.manager.Rotate(req.Context(), t.accountID, sourceIP, reason)
+					}
+				}}
+			}
 		}
 		if reason == "" || req.Context().Err() != nil {
 			return resp, requestErr

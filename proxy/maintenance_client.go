@@ -51,7 +51,7 @@ func maintenanceClientKey(account *auth.Account, proxyURL, transportMode, purpos
 // forceUTLS=true 时无视 CODEX_TRANSPORT_MODE 强制使用 uTLS Chrome 指纹
 // （订阅端点在 Cloudflare 后面，普通指纹会被拦截）。
 func getMaintenanceClient(account *auth.Account, proxyURL, purpose string, forceUTLS bool) *http.Client {
-	return wrapIPv6Client(account, getRawMaintenanceClient(account, proxyURL, purpose, forceUTLS), true, forceUTLS)
+	return wrapIPv6Client(account, getRawMaintenanceClient(account, proxyURL, purpose, forceUTLS), true, forceUTLS, "maintenance:"+purpose)
 }
 
 func getRawMaintenanceClient(account *auth.Account, proxyURL, purpose string, forceUTLS bool) *http.Client {
