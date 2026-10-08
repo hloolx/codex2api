@@ -364,6 +364,10 @@ func main() {
 	store.TriggerAutoCleanupAsync()
 	defer store.Stop()
 	backgroundCtx, cancelBackground := context.WithCancel(context.Background())
+	defer func() {
+		cancelBackground()
+		adminHandler.WaitModelQuality()
+	}()
 	adminHandler.StartQualityTests(backgroundCtx)
 	if err := adminHandler.StartModelQuality(backgroundCtx); err != nil {
 		cancelBackground()
@@ -375,7 +379,6 @@ func main() {
 		return
 	}
 	defer adminHandler.StopStatePool()
-	defer cancelBackground()
 	if !proxy.StartResponseCacheSettingsPoller(backgroundCtx, db) {
 		log.Fatalf("启动响应缓存设置同步失败")
 	}
